@@ -145,7 +145,7 @@ where
     }
 }
 
-use cgmath::{ElementWise, Vector2, Vector3};
+use cgmath::{ElementWise, Point2, Vector2, Vector3};
 
 pub struct MeshBuilder {
     vertices: Vec<MeshVertex>,
@@ -153,11 +153,17 @@ pub struct MeshBuilder {
 }
 
 pub enum Direction {
+    /// +Z
     North,
+    /// -X
     East,
+    /// -Z
     South,
+    /// +X
     West,
+    /// +Y
     Up,
+    /// -Y
     Down,
 }
 
@@ -169,7 +175,7 @@ impl MeshBuilder {
         }
     }
 
-    pub fn add_face(&mut self, offset: Vector3<f32>, direction: Direction) {
+    pub fn add_face(&mut self, offset: Vector3<f32>, direction: Direction, uv: [Point2<f32>; 4]) {
         let pos = match direction {
             Direction::North => [
                 [-0.5, 0.5, 0.5],
@@ -210,7 +216,6 @@ impl MeshBuilder {
         };
 
         let indices = [0, 3, 1, 1, 3, 2];
-        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
         let normals = match direction {
             Direction::North => [[0.0, 0.0, 1.0]; 4],
@@ -227,7 +232,7 @@ impl MeshBuilder {
             .zip(normals)
             .map(|((pos, uv), norm)| MeshVertex {
                 position: [pos[0] + offset.x, pos[1] + offset.y, pos[2] + offset.z],
-                tex_coords: uv,
+                tex_coords: uv.into(),
                 normal: norm,
             });
 

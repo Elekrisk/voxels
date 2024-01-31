@@ -6,15 +6,15 @@ mod game;
 mod mesh;
 mod meshifier;
 mod texture;
+mod object;
 
 use std::{
-    sync::Arc,
-    time::{Duration, Instant},
+    borrow::BorrowMut, sync::Arc, time::{Duration, Instant}
 };
 
 use assets::AssetManager;
 use camera::{Camera, CameraController, Projection};
-use cgmath::{prelude::*, Quaternion, Vector3};
+use cgmath::{prelude::*, Quaternion, Vector2, Vector3};
 use game::Game;
 use mesh::{DrawModel, Material, Mesh, MeshVertex, Vertex};
 use texture::Texture;
@@ -36,6 +36,7 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
+/// Uniform representing the camera projection
 impl CameraUniform {
     fn new() -> Self {
         use cgmath::SquareMatrix;
@@ -49,6 +50,7 @@ impl CameraUniform {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
 struct Instance {
     position: cgmath::Vector3<f32>,
     rotation: cgmath::Quaternion<f32>,
@@ -116,11 +118,7 @@ struct State<'w> {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     camera_controller: CameraController,
-    instances: Vec<Instance>,
-    instance_buffer: wgpu::Buffer,
     depth_texture: Texture,
-    mouse_pressed: bool,
-    meshes: Vec<Mesh>,
     asset_manager: AssetManager,
     game: Game,
 }
@@ -256,42 +254,6 @@ impl<'w> State<'w> {
             label: Some("camera_bind_group"),
         });
 
-        let instances = (0..NUM_INSTANCES_PER_ROW)
-            .flat_map(|z| {
-                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let position = cgmath::Vector3 {
-                        x: x as f32,
-                        y: 0.0,
-                        z: z as f32,
-                    } - INSTANCE_DISPLACEMENT;
-
-                    Instance {
-                        position,
-                        rotation: cgmath::Quaternion::from_axis_angle(
-                            cgmath::Vector3::unit_z(),
-                            cgmath::Deg(0.0),
-                        ),
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let instances = vec![Instance {
-            position: Vector3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            rotation: Quaternion::from_axis_angle(Vector3::unit_z(), cgmath::Deg(0.0)),
-        }];
-
-        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
@@ -350,36 +312,6 @@ impl<'w> State<'w> {
             texture_bind_group_layout.clone(),
         );
 
-        let material = asset_manager.load_material("assets/image.png").unwrap();
-
-        let mesh = Mesh::new(
-            &[
-                MeshVertex {
-                    position: [-0.5, 0.5, 0.0],
-                    tex_coords: [0.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-                MeshVertex {
-                    position: [0.5, 0.5, 0.0],
-                    tex_coords: [1.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-                MeshVertex {
-                    position: [0.5, -0.5, 0.0],
-                    tex_coords: [1.0, 1.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-                MeshVertex {
-                    position: [-0.5, -0.5, 0.0],
-                    tex_coords: [0.0, 1.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-            ],
-            &[0, 3, 1, 1, 3, 2],
-            material,
-            &device,
-        );
-
         let game = Game::new(&mut asset_manager);
 
         State {
@@ -395,12 +327,8 @@ impl<'w> State<'w> {
             camera_buffer,
             camera_bind_group,
             camera_controller,
-            instances,
-            instance_buffer,
             depth_texture,
             projection,
-            mouse_pressed: false,
-            meshes: vec![mesh],
             texture_bind_group_layout,
             asset_manager,
             game,
@@ -427,13 +355,18 @@ impl<'w> State<'w> {
         match event {
             WindowEvent::KeyboardInput {
                 event:
-                    KeyEvent {
+                    event@KeyEvent {
                         physical_key: PhysicalKey::Code(key),
                         state,
                         ..
                     },
                 ..
-            } => self.camera_controller.process_keyboard(*key, *state),
+            } => {
+                let mut handled = false;
+                handled |= self.camera_controller.process_keyboard(*key, *state);
+                self.game.keyboard_input(event.clone());
+                handled
+            },
             WindowEvent::MouseWheel { delta, .. } => {
                 self.camera_controller.process_scroll(delta);
                 true
@@ -443,9 +376,10 @@ impl<'w> State<'w> {
     }
 
     fn update(&mut self, dt: Duration) {
-        self.camera_controller.update_camera(&mut self.camera, dt);
+        // self.camera_controller.update_camera(&mut self.camera, dt);
+        self.game.update(dt);
         self.camera_uniform
-            .update_view_proj(&self.camera, &self.projection);
+            .update_view_proj(&self.game.camera, &self.projection);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -463,6 +397,12 @@ impl<'w> State<'w> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
+
+        let mut meshes_to_render = self.game.get_objects_to_render(&self.device);
+
+        for obj in &mut meshes_to_render {
+            obj.update_instance_buffer(&self.queue);
+        }
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -493,14 +433,12 @@ impl<'w> State<'w> {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            // render_pass.draw_mesh_instanced(
-            //     &self.meshes[0],
-            //     0..self.instances.len() as u32,
-            //     &self.camera_bind_group,
-            // );
-            self.game
-                .render(&mut render_pass, &self.device, &self.camera_bind_group);
+
+            for obj in &mut meshes_to_render {
+                render_pass.set_vertex_buffer(1, obj.instance_buffer.slice(..));
+                render_pass.draw_mesh_instanced(&obj.mesh, 0..1, &self.camera_bind_group);
+            }
+
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -529,7 +467,10 @@ pub async fn run() {
             Event::DeviceEvent {
                 event: DeviceEvent::MouseMotion { delta },
                 ..
-            } => state.camera_controller.process_mouse(delta.0, delta.1),
+            } => {
+                state.camera_controller.process_mouse(delta.0, delta.1);
+                state.game.mouse_input(<Vector2<f64>>::from([delta.0, delta.1]).cast().unwrap());
+            },
             Event::WindowEvent {
                 ref event,
                 window_id,

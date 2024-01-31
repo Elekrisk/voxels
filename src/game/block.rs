@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use cgmath::Point2;
+
 use crate::mesh::Material;
 
 #[derive(Clone, Copy)]
@@ -14,12 +16,18 @@ pub struct Block {
     pub metadata: BlockMetadata,
 }
 
+impl Default for Block {
+    fn default() -> Self {
+        Self { id: BlockId(0), metadata: BlockMetadata(0) }
+    }
+}
+
 pub trait BlockInfo {}
 
 pub struct BlockAttributes {
     pub transparent: bool,
     pub invisible: bool,
-    pub material: Arc<Material>,
+    pub uv_coords: Point2<usize>,
 }
 
 pub struct BlockRegistry {
