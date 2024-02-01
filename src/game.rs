@@ -1,12 +1,16 @@
-use std::{sync::Arc, time::Duration};
+use std::{io::Write, sync::Arc, time::Duration};
 
-use cgmath::{EuclideanSpace, Quaternion, Rotation3, Vector2, Vector3};
+use bevy_ecs::{
+    component::Component, schedule::{Schedule, ScheduleLabel}, system::Resource
+};
+use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Rotation3, Vector2, Vector3};
 use wgpu::RenderPass;
-use winit::event::KeyEvent;
+use winit::event::{ElementState, KeyEvent, MouseButton};
 
 use crate::{
     assets::AssetManager,
     camera::Camera,
+    input::Input,
     mesh::{DrawModel, Mesh},
     meshifier::ChunkMeshifier,
     object::Object,
@@ -14,26 +18,34 @@ use crate::{
 };
 
 use self::{
-    atlas::Atlas, block::{BlockAttributes, BlockId, BlockRegistry}, entity::{Collider, Commands, Entity, EntityId, PlayerController}, physics_engine::PhysicsEngine, player::Player, world::World
+    atlas::Atlas, block::{BlockAttributes, BlockId, BlockRegistry}, physics::Collider, player::PlayerController, world::World
 };
 
 pub mod atlas;
 pub mod block;
 pub mod chunk;
-mod entity;
-mod physics_engine;
 mod player;
 pub mod world;
+mod physics;
+
+#[derive(Clone, Copy, PartialEq, Component)]
+pub struct Position(pub Point3<f32>);
+#[derive(Clone, Copy, PartialEq, Component)]
+pub struct Velocity(pub Vector3<f32>);
 
 pub struct Game {
-    pub world: World,
-    pub block_registry: BlockRegistry,
     atlas: Atlas,
     chunk_meshifier: ChunkMeshifier,
-    pub camera: Camera,
-    entities: Vec<Entity>,
-    physics_engine: PhysicsEngine,
+    ecs_world: bevy_ecs::world::World,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ScheduleLabel)]
+pub enum ScheduleStage {
+    Update,
+}
+
+#[derive(Clone, Copy, PartialEq, Resource)]
+pub struct DeltaTime(pub f32);
 
 impl Game {
     pub fn new(asset_manager: &mut AssetManager) -> Self {
@@ -63,95 +75,103 @@ impl Game {
         };
         block_registry.register(BlockId(2), stone_block_attr);
 
-        let mut world = World::new();
-        world.generate_chunk([0, 0, 0]);
-        world.generate_chunk([1, 0, 0]);
+        let neco_arg_block_attr = BlockAttributes {
+            transparent: false,
+            invisible: false,
+            uv_coords: [2, 0].into(),
+        };
+        block_registry.register(BlockId(3), neco_arg_block_attr);
 
-        let player = Entity {
-            id: EntityId::new(),
-            pos: [0.5, 20.0, 0.5].into(),
-            vel: [0.0, 0.0, 0.0].into(),
-            collider: Collider {
+        let mut world = World::new();
+
+        for x in 0..=0 {
+            for z in 0..=0 {
+                for y in 0..=0 {
+                    world.generate_chunk([x, y, z]);
+                }
+            }
+        }
+
+        let camera = Camera::new([0.0, 0.0, 0.0], cgmath::Deg(0.0), cgmath::Deg(0.0));
+
+        world.raycast([8.5, -1.0, 8.5].into(), [0.0, 1.0, 0.0].into(), 100.0, &block_registry);
+
+        let input = Input::new();
+
+        let mut ecs_world = bevy_ecs::world::World::new();
+        ecs_world.insert_resource(world);
+        ecs_world.insert_resource(block_registry);
+        ecs_world.insert_resource(camera);
+        ecs_world.insert_resource(input);
+        ecs_world.insert_resource(DeltaTime(1.0 / 60.0));
+
+        let mut schedule = Schedule::new(ScheduleStage::Update);
+        schedule.add_systems(player::update_system);
+        schedule.add_systems(physics::physics_system);
+        ecs_world.add_schedule(schedule);
+        
+        ecs_world.spawn((
+            Position([8.0, 20.0, 8.0].into()),
+            Velocity([0.0, 0.0, 0.0].into()),
+            Collider {
+                enabled: false,
+                gravity: false,
                 extents: [0.5, 1.8, 0.5].into()
             },
-            components: vec![
-                Box::new(PlayerController::new())
-            ],
-        };
+            PlayerController::new(),
+        ));
 
         Self {
-            world,
-            block_registry,
             atlas,
             chunk_meshifier: ChunkMeshifier::new(),
-            camera: Camera::new([0.0, 0.0, 0.0], cgmath::Deg(0.0), cgmath::Deg(0.0)),
-            entities: vec![player],
-            physics_engine: PhysicsEngine::new(),
+            ecs_world,
         }
     }
 
     pub fn update(&mut self, dt: Duration) {
-        let mut commands = Commands::new();
-
-        for entity in &mut self.entities {
-            let id = entity.id;
-            for component in &mut entity.components {
-                component.update(id, dt, &mut commands);
-            }
-        }
-
-        commands.execute(self);
-        self.physics_engine.do_physics(&self.world, &mut self.entities, dt);
+        std::io::stdout().flush().unwrap();
+        self.ecs_world.resource_mut::<DeltaTime>().0 = dt.as_secs_f32();
+        self.ecs_world.run_schedule(ScheduleStage::Update);
+        self.ecs_world.resource_mut::<Input>().end_frame();
     }
 
     pub fn keyboard_input(&mut self, event: KeyEvent) {
-        let mut commands = Commands::new();
-
-        for entity in &mut self.entities {
-            let id = entity.id;
-            for component in &mut entity.components {
-                component.keyboard_input(event.clone(), &mut commands);
-            }
-        }
-
-        commands.execute(self);
+        self.ecs_world
+            .resource_mut::<Input>()
+            .process_key_event(event);
     }
 
     pub fn mouse_input(&mut self, delta: Vector2<f32>) {
-        let mut commands = Commands::new();
+        std::io::stdout().flush().unwrap();
+        self.ecs_world
+            .resource_mut::<Input>()
+            .process_mouse_move(delta);
+    }
 
-        for entity in &mut self.entities {
-            let id = entity.id;
-            for component in &mut entity.components {
-                component.mouse_input(delta, &mut commands);
-            }
-        }
+    pub fn mouse_button_input(&mut self, button: MouseButton, state: ElementState) {
+        self.ecs_world.resource_mut::<Input>().process_mouse_input(button, state);
+    }
 
-        commands.execute(self);
+    pub fn camera(&self) -> &Camera {
+        self.ecs_world.resource::<Camera>()
     }
 
     pub fn get_objects_to_render(&mut self, device: &wgpu::Device) -> Vec<Object> {
-        self.world
+        let world = self.ecs_world.resource::<World>();
+        let block_registry = self.ecs_world.resource::<BlockRegistry>();
+        world
             .chunks
             .iter()
             .map(|chunk| {
-                let mesh = self.chunk_meshifier.meshify(
-                    &self.world,
-                    chunk,
-                    &self.atlas,
-                    &self.block_registry,
-                    device,
-                );
-                let object = Object::new(
-                    mesh,
-                    Instance {
-                        position: chunk.pos.cast().unwrap().to_vec() * 16.0,
-                        rotation: Quaternion::from_angle_z(cgmath::Deg(0.0)),
-                    },
-                    device,
-                );
+                let mesh =
+                    self.chunk_meshifier
+                        .meshify(world, chunk, &self.atlas, block_registry, device);
+                let instance = Instance {
+                    position: chunk.pos.cast::<f32>().unwrap() * 16.0,
+                    rotation: Quaternion::from_angle_z(cgmath::Deg(0.0)),
+                };
 
-                object
+                Object::new(mesh, instance, device)
             })
             .collect()
     }

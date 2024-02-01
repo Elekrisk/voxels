@@ -1,5 +1,7 @@
 #![feature(generic_arg_infer)]
 #![feature(inline_const)]
+#![feature(int_roundings)]
+
 mod assets;
 mod camera;
 mod game;
@@ -7,9 +9,11 @@ mod mesh;
 mod meshifier;
 mod texture;
 mod object;
+mod ecs_world;
+mod input;
 
 use std::{
-    borrow::BorrowMut, sync::Arc, time::{Duration, Instant}
+    borrow::BorrowMut, ops::Rem, sync::Arc, time::{Duration, Instant}
 };
 
 use assets::AssetManager;
@@ -52,14 +56,14 @@ impl CameraUniform {
 
 #[derive(Clone, Copy, PartialEq)]
 struct Instance {
-    position: cgmath::Vector3<f32>,
+    position: cgmath::Point3<f32>,
     rotation: cgmath::Quaternion<f32>,
 }
 
 impl Instance {
     fn to_raw(&self) -> InstanceRaw {
         InstanceRaw {
-            model: (cgmath::Matrix4::from_translation(self.position)
+            model: (cgmath::Matrix4::from_translation(self.position.to_vec())
                 * cgmath::Matrix4::from(self.rotation))
             .into(),
         }
@@ -112,23 +116,14 @@ struct State<'w> {
     size: PhysicalSize<u32>,
     window: Window,
     render_pipeline: wgpu::RenderPipeline,
-    camera: Camera,
     projection: Projection,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
-    camera_controller: CameraController,
     depth_texture: Texture,
     asset_manager: AssetManager,
     game: Game,
 }
-
-const NUM_INSTANCES_PER_ROW: u32 = 10;
-const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
-    NUM_INSTANCES_PER_ROW as f32 * 0.5,
-    0.0,
-    NUM_INSTANCES_PER_ROW as f32 * 0.5,
-);
 
 impl<'w> State<'w> {
     async fn new(window: Window) -> Self {
@@ -219,7 +214,6 @@ impl<'w> State<'w> {
         let camera = Camera::new((0.0, 5.0, 10.0), cgmath::Deg(-90.0), cgmath::Deg(-2.0));
         let projection =
             Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
-        let camera_controller = CameraController::new(4.0, 1.0);
 
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera, &projection);
@@ -322,11 +316,9 @@ impl<'w> State<'w> {
             size,
             window,
             render_pipeline,
-            camera,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
-            camera_controller,
             depth_texture,
             projection,
             texture_bind_group_layout,
@@ -362,13 +354,14 @@ impl<'w> State<'w> {
                     },
                 ..
             } => {
-                let mut handled = false;
-                handled |= self.camera_controller.process_keyboard(*key, *state);
                 self.game.keyboard_input(event.clone());
-                handled
+                false
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                self.camera_controller.process_scroll(delta);
+                true
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.game.mouse_button_input(*button, *state);
                 true
             }
             _ => false,
@@ -379,7 +372,7 @@ impl<'w> State<'w> {
         // self.camera_controller.update_camera(&mut self.camera, dt);
         self.game.update(dt);
         self.camera_uniform
-            .update_view_proj(&self.game.camera, &self.projection);
+            .update_view_proj(&self.game.camera(), &self.projection);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -455,6 +448,7 @@ pub async fn run() {
 
     let mut state = State::new(window).await;
     let mut last_render_time = Instant::now();
+    let mut first = true;
 
     state
         .window
@@ -468,7 +462,6 @@ pub async fn run() {
                 event: DeviceEvent::MouseMotion { delta },
                 ..
             } => {
-                state.camera_controller.process_mouse(delta.0, delta.1);
                 state.game.mouse_input(<Vector2<f64>>::from([delta.0, delta.1]).cast().unwrap());
             },
             Event::WindowEvent {
@@ -479,7 +472,12 @@ pub async fn run() {
                     match event {
                         WindowEvent::RedrawRequested => {
                             let now = Instant::now();
-                            let dt = now - last_render_time;
+                            let dt = if first {
+                                first = false;
+                                Duration::from_secs_f32(1.0 / 60.0)
+                            } else {
+                                now - last_render_time
+                            };
                             last_render_time = now;
                             state.update(dt);
                             match state.render() {

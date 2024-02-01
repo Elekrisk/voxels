@@ -29,7 +29,7 @@ impl ChunkMeshifier {
         block_registry: &BlockRegistry,
         device: &wgpu::Device,
     ) -> Arc<Mesh> {
-        if self.cache.contains_key(&chunk.pos) {
+        if !chunk.dirty.load(std::sync::atomic::Ordering::Relaxed) && self.cache.contains_key(&chunk.pos) {
             return self.cache.get(&chunk.pos).unwrap().clone();
         }
         
@@ -86,6 +86,7 @@ impl ChunkMeshifier {
 
         let mesh = builder.build(material, device);
         self.cache.insert(chunk.pos, Arc::new(mesh));
+        chunk.dirty.store(false, std::sync::atomic::Ordering::Relaxed);
         self.cache.get(&chunk.pos).unwrap().clone()
     }
 }

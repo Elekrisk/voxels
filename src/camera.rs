@@ -1,3 +1,4 @@
+use bevy_ecs::system::Resource;
 use cgmath::*;
 use std::f32;
 use std::f32::consts::FRAC_PI_2;
@@ -16,7 +17,7 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
 
 const SAFE_FRAC_PI_2: f32 = FRAC_PI_2 - 0.0001;
 
-#[derive(Debug)]
+#[derive(Debug, Resource)]
 pub struct Camera {
     pub position: Point3<f32>,
     pub yaw: Rad<f32>,
@@ -45,6 +46,12 @@ impl Camera {
             Vector3::new(cos_pitch * cos_yaw, sin_pitch, cos_pitch * sin_yaw).normalize(),
             Vector3::unit_y(),
         )
+    }
+
+    pub fn forward(&self) -> Vector3<f32> {
+        let (sin_pitch, cos_pitch) = self.pitch.0.sin_cos();
+        let (sin_yaw, cos_yaw) = self.yaw.0.sin_cos();
+        Vector3::new(cos_pitch * cos_yaw, sin_pitch, cos_pitch * sin_yaw).normalize()
     }
 }
 

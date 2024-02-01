@@ -1,10 +1,11 @@
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use cgmath::Point3;
 
 use super::block::Block;
 
 pub struct Chunk {
+    pub dirty: AtomicBool,
     pub pos: Point3<isize>,
     pub blocks: [[[Block; 16]; 16]; 16],
 }
@@ -12,6 +13,7 @@ pub struct Chunk {
 impl Chunk {
     pub fn new(pos: Point3<isize>) -> Self {
         Self {
+            dirty: AtomicBool::new(true),
             pos,
             blocks: Default::default(),
         }
