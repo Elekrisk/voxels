@@ -20,7 +20,7 @@ impl World {
         let mut chunk = Chunk::new(pos.into());
 
         for (_, block) in chunk.block_iter_mut() {
-            block.id.0 = 2;
+            block.id.0 = 4; //rand::thread_rng().gen::<u8>() % 5;
         }
 
         self.chunks.push(chunk);
@@ -65,11 +65,51 @@ impl World {
         let mut remaining_range = range;
 
         fn in_range_f32(v: f32) -> bool {
-            (0.0..=16.0).contains(&v)
+            v >= -0.001 && v <= 16.001
         }
 
         fn in_range(v: Point3<f32>) -> bool {
             in_range_f32(v.x) && in_range_f32(v.y) && in_range_f32(v.z)
+        }
+
+        fn fix_range_inside(mut v: Point3<f32>) -> Point3<f32> {
+            if v.x < 0.0 {
+                v.x = 0.0;
+            } else if v.x >= 16.0 {
+                v.x = 15.999;
+            }
+            if v.y < 0.0 {
+                v.y = 0.0;
+            } else if v.y >= 16.0 {
+                v.y = 15.999;
+            }
+            if v.z < 0.0 {
+                v.z = 0.0;
+            } else if v.z >= 16.0 {
+                v.z = 15.999;
+            }
+
+            v
+        }
+
+        fn fix_range_on_side(mut v: Point3<f32>) -> Point3<f32> {
+            if v.x < 0.0 {
+                v.x = 0.0;
+            } else if v.x > 16.0 {
+                v.x = 16.0;
+            }
+            if v.y < 0.0 {
+                v.y = 0.0;
+            } else if v.y > 16.0 {
+                v.y = 16.0;
+            }
+            if v.z < 0.0 {
+                v.z = 0.0;
+            } else if v.z > 16.0 {
+                v.z = 16.0;
+            }
+
+            v
         }
 
         loop {
@@ -82,17 +122,17 @@ impl World {
                 // X
                 for x in 0..=16 {
                     let t = (x as f32 - rel_origin.x) / dir.x;
-                    if t < 0.0 || t > remaining_range {
+                    if t < -0.001 || t > remaining_range {
                         continue;
                     }
                     let p = rel_origin + dir * t + Vector3::unit_x() * 0.001 * dir.x.signum();
 
                     if in_range(p) {
-                        let pos = p.cast::<usize>().unwrap();
+                        let pos = fix_range_inside(p).cast::<usize>().unwrap();
                         let block = chunk.block(pos);
                         let attr = block_registry.get(block.id).unwrap();
                         if !attr.invisible {
-                            let position = chunk_pos.cast::<isize>().unwrap() * 16 + p.cast::<isize>().unwrap().to_vec();
+                            let position = chunk_pos.cast::<isize>().unwrap() * 16 + pos.cast::<isize>().unwrap().to_vec();
                             let normal = Vector3::unit_x() * -dir.x.signum();
 
                             let hitinfo = HitInfo {
@@ -109,17 +149,17 @@ impl World {
                 // Y
                 for y in 0..=16 {
                     let t = (y as f32 - rel_origin.y) / dir.y;
-                    if t < 0.0 || t > remaining_range {
+                    if t < -0.001 || t > remaining_range {
                         continue;
                     }
                     let p = rel_origin + dir * t + Vector3::unit_y() * 0.001 * dir.y.signum();
 
                     if in_range(p) {
-                        let pos = p.cast::<usize>().unwrap();
+                        let pos = fix_range_inside(p).cast::<usize>().unwrap();
                         let block = chunk.block(pos);
                         let attr = block_registry.get(block.id).unwrap();
                         if !attr.invisible {
-                            let position = chunk_pos.cast::<isize>().unwrap() * 16 + p.cast::<isize>().unwrap().to_vec();
+                            let position = chunk_pos.cast::<isize>().unwrap() * 16 + pos.cast::<isize>().unwrap().to_vec();
                             let normal = Vector3::unit_y() * -dir.y.signum();
 
                             let hitinfo = HitInfo {
@@ -136,17 +176,17 @@ impl World {
                 // Z
                 for z in 0..=16 {
                     let t = (z as f32 - rel_origin.z) / dir.z;
-                    if t < 0.0 || t > remaining_range {
+                    if t < -0.001 || t > remaining_range {
                         continue;
                     }
                     let p = rel_origin + dir * t + Vector3::unit_z() * 0.001 * dir.z.signum();
 
                     if in_range(p) {
-                        let pos = p.cast::<usize>().unwrap();
+                        let pos = fix_range_inside(p).cast::<usize>().unwrap();
                         let block = chunk.block(pos);
                         let attr = block_registry.get(block.id).unwrap();
                         if !attr.invisible {
-                            let position = chunk_pos.cast::<isize>().unwrap() * 16 + p.cast::<isize>().unwrap().to_vec();
+                            let position = chunk_pos.cast::<isize>().unwrap() * 16 + pos.cast::<isize>().unwrap().to_vec();
                             let normal = Vector3::unit_z() * -dir.z.signum();
 
                             let hitinfo = HitInfo {
@@ -159,12 +199,13 @@ impl World {
                         }
                     }
                 }
+
+                if !block_hits.is_empty() {
+                    block_hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                    return Some(block_hits[0].0);
+                }
             }
 
-            if !block_hits.is_empty() {
-                block_hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                return Some(block_hits[0].0);
-            }
  
             let next_x = if dir.x >= 0.0 { 16.0 } else { 0.0 };
 
@@ -173,7 +214,7 @@ impl World {
 
             if xt <= remaining_range && in_range(xp) {
                 chunk_pos.x += dir.x.signum() as isize;
-                rel_origin = xp + Vector3::unit_x() * 16.0 * -dir.x.signum();
+                rel_origin = fix_range_on_side(xp + Vector3::unit_x() * 16.0 * -dir.x.signum());
                 remaining_range -= xt;
                 continue;
             }
@@ -185,7 +226,7 @@ impl World {
 
             if yt <= remaining_range && in_range(yp) {
                 chunk_pos.y += dir.y.signum() as isize;
-                rel_origin = yp + Vector3::unit_y() * 16.0 * -dir.y.signum();
+                rel_origin = fix_range_on_side(yp + Vector3::unit_y() * 16.0 * -dir.y.signum());
                 remaining_range -= yt;
                 continue;
             }
@@ -197,7 +238,7 @@ impl World {
 
             if zt <= remaining_range && in_range(zp) {
                 chunk_pos.z += dir.z.signum() as isize;
-                rel_origin = zp + Vector3::unit_z() * 16.0 * -dir.z.signum();
+                rel_origin = fix_range_on_side(zp + Vector3::unit_z() * 16.0 * -dir.z.signum());
                 remaining_range -= zt;
                 continue;
             }

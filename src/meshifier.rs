@@ -1,23 +1,28 @@
 use std::{cell::RefCell, sync::Arc};
 
-use cgmath::{Point3, Vector2, Vector3, Zero};
+use cgmath::{EuclideanSpace, Point2, Point3, Vector2, Vector3, Zero};
 use wgpu::naga::FastHashMap;
 
 use crate::{
     game::{
-        atlas::Atlas, block::{BlockId, BlockRegistry}, chunk::Chunk, world::World
+        atlas::Atlas,
+        block::{BlockId, BlockRegistry},
+        chunk::Chunk,
+        world::World,
     },
-    mesh::{Mesh, MeshBuilder},
+    mesh::{Direction, Mesh, MeshBuilder, MeshVertex},
 };
 
 pub struct ChunkMeshifier {
-    cache: FastHashMap<Point3<isize>, Arc<Mesh>>
+    cache: FastHashMap<Point3<isize>, Arc<Mesh>>,
+    pub enable_ao: bool,
 }
 
 impl ChunkMeshifier {
     pub fn new() -> Self {
         Self {
             cache: FastHashMap::default(),
+            enable_ao: true,
         }
     }
 
@@ -29,16 +34,19 @@ impl ChunkMeshifier {
         block_registry: &BlockRegistry,
         device: &wgpu::Device,
     ) -> Arc<Mesh> {
-        if !chunk.dirty.load(std::sync::atomic::Ordering::Relaxed) && self.cache.contains_key(&chunk.pos) {
+        if !chunk.dirty.load(std::sync::atomic::Ordering::Relaxed)
+            && self.cache.contains_key(&chunk.pos)
+        {
             return self.cache.get(&chunk.pos).unwrap().clone();
         }
-        
+
         let mut builder = MeshBuilder::new();
 
         for x in 0..16 {
             for y in 0..16 {
                 for z in 0..16 {
-                    let block = &chunk.blocks[x][y][z];
+                    let position = Point3::new(x, y, z);
+                    let block = &chunk.block(position);
                     let attr = block_registry.get(block.id).unwrap();
                     if attr.invisible {
                         continue;
@@ -61,22 +69,76 @@ impl ChunkMeshifier {
                     let uv = atlas.uv(attr.uv_coords);
 
                     if z == 15 || is_transparent(0, 0, 1) {
-                        builder.add_face(offset, crate::mesh::Direction::North, uv);
+                        // builder.add_face(offset, crate::mesh::Direction::North, uv);
+                        self.build_face(
+                            &mut builder,
+                            offset,
+                            chunk,
+                            position,
+                            Direction::North,
+                            uv,
+                            block_registry,
+                        );
                     }
                     if z == 0 || is_transparent(0, 0, -1) {
-                        builder.add_face(offset, crate::mesh::Direction::South, uv);
+                        // builder.add_face(offset, crate::mesh::Direction::South, uv);
+                        self.build_face(
+                            &mut builder,
+                            offset,
+                            chunk,
+                            position,
+                            Direction::South,
+                            uv,
+                            block_registry,
+                        );
                     }
                     if y == 15 || is_transparent(0, 1, 0) {
-                        builder.add_face(offset, crate::mesh::Direction::Up, uv);
+                        // builder.add_face(offset, crate::mesh::Direction::Up, uv);
+                        self.build_face(
+                            &mut builder,
+                            offset,
+                            chunk,
+                            position,
+                            Direction::Up,
+                            uv,
+                            block_registry,
+                        );
                     }
                     if y == 0 || is_transparent(0, -1, 0) {
-                        builder.add_face(offset, crate::mesh::Direction::Down, uv);
+                        // builder.add_face(offset, crate::mesh::Direction::Down, uv);
+                        self.build_face(
+                            &mut builder,
+                            offset,
+                            chunk,
+                            position,
+                            Direction::Down,
+                            uv,
+                            block_registry,
+                        );
                     }
                     if x == 15 || is_transparent(1, 0, 0) {
-                        builder.add_face(offset, crate::mesh::Direction::West, uv);
+                        // builder.add_face(offset, crate::mesh::Direction::West, uv);
+                        self.build_face(
+                            &mut builder,
+                            offset,
+                            chunk,
+                            position,
+                            Direction::West,
+                            uv,
+                            block_registry,
+                        );
                     }
                     if x == 0 || is_transparent(-1, 0, 0) {
-                        builder.add_face(offset, crate::mesh::Direction::East, uv);
+                        // builder.add_face(offset, crate::mesh::Direction::East, uv);
+                        self.build_face(
+                            &mut builder,
+                            offset,
+                            chunk,
+                            position,
+                            Direction::East,
+                            uv,
+                            block_registry,
+                        );
                     }
                 }
             }
@@ -86,7 +148,90 @@ impl ChunkMeshifier {
 
         let mesh = builder.build(material, device);
         self.cache.insert(chunk.pos, Arc::new(mesh));
-        chunk.dirty.store(false, std::sync::atomic::Ordering::Relaxed);
+        chunk
+            .dirty
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         self.cache.get(&chunk.pos).unwrap().clone()
+    }
+
+    fn build_face(
+        &mut self,
+        builder: &mut MeshBuilder,
+        offset: Vector3<f32>,
+        chunk: &Chunk,
+        position: Point3<usize>,
+        direction: Direction,
+        uv: [Point2<f32>; 4],
+        block_registry: &BlockRegistry,
+    ) {
+        let no = 0.0 / 6.0;
+        let li = 1.0 / 6.0;
+        let me = 2.0 / 6.0;
+        let he = 3.0 / 6.0;
+
+        let pos = position.cast::<isize>().unwrap();
+
+        let block_offsets = [
+            [-1, 0],
+            [-1, 1],
+            [0, 1],
+            [1, 1],
+            [1, 0],
+            [1, -1],
+            [0, -1],
+            [-1, -1],
+        ];
+
+        let mut blocking: u8 = 0;
+
+        for offset in block_offsets {
+            blocking >>= 1;
+            let pos: Point3<isize> = pos
+                + direction.on_plane(offset.into()).to_vec()
+                + direction.normal().cast().unwrap();
+            if pos.x < 0 || pos.y < 0 || pos.z < 0 || pos.x > 15 || pos.y > 15 || pos.z > 15 {
+                continue;
+            }
+            let pos = pos.cast().unwrap();
+            if !block_registry.get(chunk.block(pos).id).unwrap().transparent {
+                blocking |= 0x80;
+            }
+        }
+
+        let get_ao = |blocks: u8| match blocks & 0b111 {
+            0b000 => no,
+            0b001 => li,
+            0b010 => li,
+            0b011 => me,
+            0b100 => li,
+            0b101 => he,
+            0b110 => me,
+            0b111 => he,
+            _ => unreachable!(),
+        };
+
+        let tl_ao = get_ao(blocking);
+        let tr_ao = get_ao(blocking >> 2);
+        let br_ao = get_ao(blocking >> 4);
+        let bl_ao = get_ao(blocking >> 6 | blocking << 2);
+
+        let vertex_positions = [[-0.5, 0.5], [0.5, 0.5], [0.5, -0.5], [-0.5, -0.5]]
+            .into_iter()
+            .map(|p|  direction.on_plane(p.into()) + direction.normal() * 0.5)
+            .collect::<Vec<_>>();
+        let vertex_uvs = uv;
+        let vertex_aos = [tl_ao, tr_ao, br_ao, bl_ao];
+        let vertex_indices = [0, 3, 1, 1, 3, 2];
+
+        let vertices = (0..4)
+            .map(|i| MeshVertex {
+                position: (vertex_positions[i] + offset).into(),
+                tex_coords: vertex_uvs[i].into(),
+                ambient_occlusion: if self.enable_ao { vertex_aos[i] } else { 0.0 },
+                normal: direction.normal().into(),
+            })
+            .collect::<Vec<_>>();
+
+        builder.add_vert_indices(&vertices, &vertex_indices);
     }
 }

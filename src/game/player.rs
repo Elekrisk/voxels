@@ -1,8 +1,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use bevy_ecs::{
-    component::Component,
-    system::{Query, Res, ResMut},
+    component::Component, entity::Entity, system::{Commands, Query, Res, ResMut}
 };
 use cgmath::{InnerSpace, Point3, Rad, Vector3, Zero};
 use winit::{event::MouseButton, keyboard::KeyCode};
@@ -57,6 +56,7 @@ pub fn update_system(
     mut camera: ResMut<Camera>,
     mut world: ResMut<World>,
     block_registry: Res<BlockRegistry>,
+    mut commands: Commands
 ) {
     for (mut pc, pos, mut vel, mut col) in &mut query {
         let mut v = Vector3::zero();
@@ -129,7 +129,7 @@ pub fn update_system(
                     },
                     hitinfo.position,
                 );
-                pc.mine_cooldown = 0.2;
+                pc.mine_cooldown = 0.25;
             }
         }
 
@@ -146,7 +146,7 @@ pub fn update_system(
                     },
                     hitinfo.position + hitinfo.normal.cast::<isize>().unwrap(),
                 );
-                pc.place_cooldown = 0.2;
+                pc.place_cooldown = 0.25;
             }
         }
 
@@ -158,6 +158,9 @@ pub fn update_system(
         }
         if input.is_just_pressed(KeyCode::Digit3) {
             pc.place_block_id.0 = 3;
+        }
+        if input.is_just_pressed(KeyCode::Digit4) {
+            pc.place_block_id.0 = 4;
         }
 
         pc.mine_cooldown -= dt.0;

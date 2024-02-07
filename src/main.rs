@@ -306,7 +306,7 @@ impl<'w> State<'w> {
             texture_bind_group_layout.clone(),
         );
 
-        let game = Game::new(&mut asset_manager);
+        let game = Game::new(&mut asset_manager, &device);
 
         State {
             surface,
@@ -429,7 +429,9 @@ impl<'w> State<'w> {
 
             for obj in &mut meshes_to_render {
                 render_pass.set_vertex_buffer(1, obj.instance_buffer.slice(..));
-                render_pass.draw_mesh_instanced(&obj.mesh, 0..1, &self.camera_bind_group);
+                if obj.mesh.num_elements > 0 {
+                    render_pass.draw_mesh_instanced(&obj.mesh, 0..1, &self.camera_bind_group);
+                }
             }
 
         }

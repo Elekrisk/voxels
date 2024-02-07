@@ -1,4 +1,4 @@
-use std::{ops::Range, sync::Arc};
+use std::{ops::{Neg, Range}, sync::Arc};
 
 use wgpu::util::DeviceExt;
 
@@ -13,6 +13,7 @@ pub trait Vertex {
 pub struct MeshVertex {
     pub position: [f32; 3],
     pub tex_coords: [f32; 2],
+    pub ambient_occlusion: f32,
     pub normal: [f32; 3],
 }
 
@@ -35,6 +36,11 @@ impl Vertex for MeshVertex {
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 5]>() as wgpu::BufferAddress,
                     shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 6]>() as wgpu::BufferAddress,
+                    shader_location: 3,
                     format: wgpu::VertexFormat::Float32x3,
                 },
             ],
@@ -145,7 +151,7 @@ where
     }
 }
 
-use cgmath::{ElementWise, Point2, Vector2, Vector3};
+use cgmath::{ElementWise, Point2, Point3, Vector2, Vector3, Zero};
 
 pub struct MeshBuilder {
     vertices: Vec<MeshVertex>,
@@ -167,12 +173,42 @@ pub enum Direction {
     Down,
 }
 
+impl Direction {
+    pub fn normal(&self) -> Vector3<f32> {
+        match self {
+            Direction::North => [0.0, 0.0, 1.0],
+            Direction::East => [-1.0, 0.0, 0.0],
+            Direction::South => [0.0, 0.0, -1.0],
+            Direction::West => [1.0, 0.0, 0.0],
+            Direction::Up => [0.0, 1.0, 0.0],
+            Direction::Down => [0.0, -1.0, 0.0],
+        }.into()
+    }
+
+    pub fn on_plane<T: Zero + Neg<Output=T> + Clone>(&self, coords: Point2<T>) -> Point3<T> {
+        match self {
+            Direction::North => [coords.x, coords.y, T::zero()],
+            Direction::East => [T::zero(), coords.y, coords.x],
+            Direction::South => [-coords.x, coords.y, T::zero()],
+            Direction::West => [T::zero(), coords.y, -coords.x],
+            Direction::Up => [-coords.x, T::zero(), coords.y],
+            Direction::Down => [coords.x, T::zero(), coords.y],
+        }.into()
+    }
+}
+
 impl MeshBuilder {
     pub fn new() -> Self {
         Self {
             vertices: vec![],
             indices: vec![],
         }
+    }
+
+    pub fn add_vert_indices(&mut self, vertices: &[MeshVertex], local_indices: &[u32]) {
+        let offset = self.vertices.len();
+        self.vertices.extend_from_slice(vertices);
+        self.indices.extend(local_indices.iter().map(|i| i + offset as u32));
     }
 
     pub fn add_face(&mut self, offset: Vector3<f32>, direction: Direction, uv: [Point2<f32>; 4]) {
@@ -233,6 +269,7 @@ impl MeshBuilder {
             .map(|((pos, uv), norm)| MeshVertex {
                 position: [pos[0] + offset.x, pos[1] + offset.y, pos[2] + offset.z],
                 tex_coords: uv.into(),
+                ambient_occlusion: 0.0,
                 normal: norm,
             });
 
