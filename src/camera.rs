@@ -53,6 +53,58 @@ impl Camera {
         let (sin_yaw, cos_yaw) = self.yaw.0.sin_cos();
         Vector3::new(cos_pitch * cos_yaw, sin_pitch, cos_pitch * sin_yaw).normalize()
     }
+
+    pub fn frustum(&self, proj: &Projection) -> Frustum {
+        let hnear = 2.0 * (proj.fovy / 2.0).tan() * proj.znear;
+        let wnear = hnear * proj.aspect;
+
+        let d = self.forward();
+        let right = d.cross(Vector3::unit_y()).normalize();
+        let up = right.cross(d);
+
+        let fc = self.position + d * proj.zfar;
+
+        let nc = self.position + d * proj.znear;
+
+        let near = Plane {
+            normal: d,
+            point: nc,
+        };
+        let far = Plane {
+            normal: -d,
+            point: fc,
+        };
+
+        let aux = ((nc + up * hnear) - self.position).normalize();
+        let top = Plane {
+            normal: aux.cross(right),
+            point: nc + up * hnear,
+        };
+        let aux = ((nc - up * hnear) - self.position).normalize();
+        let bottom = Plane {
+            normal: right.cross(aux),
+            point: nc - up * hnear,
+        };
+        let aux = ((nc - right * wnear) - self.position).normalize();
+        let left = Plane {
+            normal: aux.cross(up),
+            point: nc - right * hnear,
+        };
+        let aux = ((nc + right * hnear) - self.position).normalize();
+        let right = Plane {
+            normal: up.cross(aux),
+            point: nc + right * hnear,
+        };
+
+        Frustum::new(
+            near,
+            far,
+            left,
+            right,
+            top,
+            bottom,
+        )
+    }
 }
 
 pub struct Projection {
@@ -82,111 +134,58 @@ impl Projection {
 }
 
 #[derive(Debug)]
-pub struct CameraController {
-    amount_left: f32,
-    amount_right: f32,
-    amount_forward: f32,
-    amount_backward: f32,
-    amount_up: f32,
-    amount_down: f32,
-    rotate_horizontal: f32,
-    rotate_vertical: f32,
-    scroll: f32,
-    speed: f32,
-    sensitivity: f32,
+pub struct Frustum {
+    planes: [Plane; 6],
 }
 
-impl CameraController {
-    pub fn new(speed: f32, sensitivity: f32) -> Self {
+impl Frustum {
+    pub fn new(
+        near: Plane,
+        far: Plane,
+        left: Plane,
+        right: Plane,
+        top: Plane,
+        bottom: Plane,
+    ) -> Self {
         Self {
-            amount_left: 0.0,
-            amount_right: 0.0,
-            amount_forward: 0.0,
-            amount_backward: 0.0,
-            amount_up: 0.0,
-            amount_down: 0.0,
-            rotate_horizontal: 0.0,
-            rotate_vertical: 0.0,
-            scroll: 0.0,
-            speed,
-            sensitivity,
+            planes: [near, far, left, right, top, bottom],
         }
     }
 
-    pub fn process_keyboard(&mut self, key: KeyCode, state: ElementState) -> bool {
-        let amount = if state == ElementState::Pressed {
-            1.0
-        } else {
-            0.0
-        };
-        match key {
-            KeyCode::KeyW => {
-                self.amount_forward = amount;
-                true
+    pub fn contains_point(&self, point: Point3<f32>) -> bool {
+        for plane in self.planes {
+            if plane.sdf(point) < 0.0 {
+                return false;
             }
-            KeyCode::KeyS => {
-                self.amount_backward = amount;
-                true
-            }
-            KeyCode::KeyA => {
-                self.amount_left = amount;
-                true
-            }
-            KeyCode::KeyD => {
-                self.amount_right = amount;
-                true
-            }
-            KeyCode::Space => {
-                self.amount_up = amount;
-                true
-            }
-            KeyCode::ShiftLeft => {
-                self.amount_down = amount;
-                true
-            }
-            _ => false,
         }
+
+        true
     }
 
-    pub fn process_mouse(&mut self, mouse_dx: f64, mouse_dy: f64) {
-        self.rotate_horizontal = mouse_dx as f32;
-        self.rotate_vertical = mouse_dy as f32;
-    }
-
-    pub fn process_scroll(&mut self, delta: &MouseScrollDelta) {
-        self.scroll = -match delta {
-            MouseScrollDelta::LineDelta(_, scroll) => scroll * 100.0,
-            MouseScrollDelta::PixelDelta(PhysicalPosition { y: scroll, .. }) => *scroll as f32,
-        };
-    }
-
-    pub fn update_camera(&mut self, camera: &mut Camera, dt: Duration) {
-        let dt = dt.as_secs_f32();
-
-        let (yaw_sin, yaw_cos) = camera.yaw.0.sin_cos();
-        let forward = Vector3::new(yaw_cos, 0.0, yaw_sin).normalize();
-        let right = Vector3::new(-yaw_sin, 0.0, yaw_cos).normalize();
-        camera.position += forward * (self.amount_forward - self.amount_backward) * self.speed * dt;
-        camera.position += right * (self.amount_right - self.amount_left) * self.speed * dt;
-
-        let (pitch_sin, pitch_cos) = camera.pitch.0.sin_cos();
-        let scrollward =
-            Vector3::new(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
-        camera.position += scrollward * self.scroll * self.speed * self.sensitivity * dt;
-        self.scroll = 0.0;
-
-        camera.position.y += (self.amount_up - self.amount_down) * self.speed * dt;
-
-        camera.yaw += Rad(self.rotate_horizontal) * self.sensitivity * dt;
-        camera.pitch += Rad(-self.rotate_vertical) * self.sensitivity * dt;
-
-        self.rotate_horizontal = 0.0;
-        self.rotate_vertical = 0.0;
-
-        if camera.pitch < -Rad(SAFE_FRAC_PI_2) {
-            camera.pitch = -Rad(SAFE_FRAC_PI_2);
-        } else if camera.pitch > Rad(SAFE_FRAC_PI_2) {
-            camera.pitch = Rad(SAFE_FRAC_PI_2);
+    pub fn contains_sphere(&self, sphere: Sphere) -> bool {
+        for plane in self.planes {
+            if plane.sdf(sphere.center) < -sphere.radius {
+                return false;
+            }
         }
+        true
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Plane {
+    normal: Vector3<f32>,
+    point: Point3<f32>,
+}
+
+impl Plane {
+    pub fn sdf(&self, point: Point3<f32>) -> f32 {
+        self.normal.dot(point - self.point)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Sphere {
+    pub center: Point3<f32>,
+    pub radius: f32,
 }

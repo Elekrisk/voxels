@@ -56,7 +56,7 @@ pub fn physics_system(
                     let chunk_pos = block_pos.map(|e| e.div_euclid(16));
                     let rel_pos = block_pos.map(|e| e.rem_euclid(16) as _);
 
-                    let Some(chunk) = world.chunks.iter().find(|c| c.pos == chunk_pos) else {
+                    let Some(chunk) = world.chunk(chunk_pos) else {
                         continue;
                     };
                     let block = chunk.block(rel_pos);

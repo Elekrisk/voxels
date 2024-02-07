@@ -1,8 +1,11 @@
-use std::{ops::{Neg, Range}, sync::Arc};
+use std::{
+    ops::{Neg, Range},
+    sync::Arc,
+};
 
 use wgpu::util::DeviceExt;
 
-use crate::texture::Texture;
+use crate::{camera::Sphere, texture::Texture};
 
 pub trait Vertex {
     fn desc() -> wgpu::VertexBufferLayout<'static>;
@@ -51,6 +54,7 @@ impl Vertex for MeshVertex {
 pub struct Mesh {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    pub local_bounding_sphere: Sphere,
     pub num_elements: u32,
     material: Arc<Material>,
 }
@@ -62,6 +66,17 @@ impl Mesh {
         material: Arc<Material>,
         device: &wgpu::Device,
     ) -> Self {
+        let center = vertices
+            .iter()
+            .map(|v| Vector3::from(v.position))
+            .sum::<Vector3<f32>>()
+            / vertices.len() as f32;
+        let radius = vertices
+            .iter()
+            .map(|v| (Vector3::from(v.position) - center).magnitude2())
+            .reduce(f32::max)
+            .unwrap_or(0.0).sqrt();
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{:?} Vertex Buffer", "TEMP!! ")),
             contents: bytemuck::cast_slice(&vertices),
@@ -75,6 +90,7 @@ impl Mesh {
 
         Self {
             vertex_buffer,
+            local_bounding_sphere: Sphere { center: Point3::from_vec(center), radius },
             index_buffer,
             num_elements: indices.len() as u32,
             material,
@@ -151,7 +167,7 @@ where
     }
 }
 
-use cgmath::{ElementWise, Point2, Point3, Vector2, Vector3, Zero};
+use cgmath::{ElementWise, EuclideanSpace, InnerSpace, One, Point2, Point3, Vector2, Vector3, Zero};
 
 pub struct MeshBuilder {
     vertices: Vec<MeshVertex>,
@@ -174,18 +190,19 @@ pub enum Direction {
 }
 
 impl Direction {
-    pub fn normal(&self) -> Vector3<f32> {
+    pub fn normal<T: Zero<Output = T> + One + Neg<Output = T> + Clone>(&self) -> Vector3<T> {
         match self {
-            Direction::North => [0.0, 0.0, 1.0],
-            Direction::East => [-1.0, 0.0, 0.0],
-            Direction::South => [0.0, 0.0, -1.0],
-            Direction::West => [1.0, 0.0, 0.0],
-            Direction::Up => [0.0, 1.0, 0.0],
-            Direction::Down => [0.0, -1.0, 0.0],
-        }.into()
+            Direction::North => [T::zero(), T::zero(), T::one()],
+            Direction::East => [-T::one(), T::zero(), T::zero()],
+            Direction::South => [T::zero(), T::zero(), -T::one()],
+            Direction::West => [T::one(), T::zero(), T::zero()],
+            Direction::Up => [T::zero(), T::one(), T::zero()],
+            Direction::Down => [T::zero(), -T::one(), T::zero()],
+        }
+        .into()
     }
 
-    pub fn on_plane<T: Zero + Neg<Output=T> + Clone>(&self, coords: Point2<T>) -> Point3<T> {
+    pub fn on_plane<T: Zero + Neg<Output = T> + Clone>(&self, coords: Point2<T>) -> Point3<T> {
         match self {
             Direction::North => [coords.x, coords.y, T::zero()],
             Direction::East => [T::zero(), coords.y, coords.x],
@@ -193,7 +210,8 @@ impl Direction {
             Direction::West => [T::zero(), coords.y, -coords.x],
             Direction::Up => [-coords.x, T::zero(), coords.y],
             Direction::Down => [coords.x, T::zero(), coords.y],
-        }.into()
+        }
+        .into()
     }
 }
 
@@ -208,7 +226,8 @@ impl MeshBuilder {
     pub fn add_vert_indices(&mut self, vertices: &[MeshVertex], local_indices: &[u32]) {
         let offset = self.vertices.len();
         self.vertices.extend_from_slice(vertices);
-        self.indices.extend(local_indices.iter().map(|i| i + offset as u32));
+        self.indices
+            .extend(local_indices.iter().map(|i| i + offset as u32));
     }
 
     pub fn add_face(&mut self, offset: Vector3<f32>, direction: Direction, uv: [Point2<f32>; 4]) {

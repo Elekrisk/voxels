@@ -1,12 +1,12 @@
-use std::{io::Write, sync::Arc, time::Duration};
+use std::{collections::HashMap, io::Write, sync::{atomic::Ordering, Arc}, time::Duration};
 
 use bevy_ecs::{
     component::Component,
     schedule::{Schedule, ScheduleLabel},
-    system::Resource,
+    system::{Res, ResMut, Resource},
 };
 use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Rotation3, Vector2, Vector3};
-use wgpu::RenderPass;
+use wgpu::{naga::FastHashMap, RenderPass};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
     keyboard::{KeyCode, PhysicalKey},
@@ -48,6 +48,7 @@ pub struct Game {
     ecs_world: bevy_ecs::world::World,
     block_select_object: Object,
     show_select_object: bool,
+    chunk_objects: FastHashMap<Point3<isize>, Object>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ScheduleLabel)]
@@ -104,20 +105,13 @@ impl Game {
 
         for x in -20..=20 {
             for z in -20..=20 {
-                for y in -3..=0 {
+                for y in -0..=0 {
                     world.generate_chunk([x, y, z]);
                 }
             }
         }
 
         let camera = Camera::new([0.0, 0.0, 0.0], cgmath::Deg(0.0), cgmath::Deg(0.0));
-
-        world.raycast(
-            [8.5, -1.0, 8.5].into(),
-            [0.0, 1.0, 0.0].into(),
-            100.0,
-            &block_registry,
-        );
 
         let input = Input::new();
 
@@ -131,6 +125,20 @@ impl Game {
         let mut schedule = Schedule::new(ScheduleStage::Update);
         schedule.add_systems(player::update_system);
         schedule.add_systems(physics::physics_system);
+        schedule.add_systems({
+            #[derive(Resource)]
+            struct T(f32, f32);
+            ecs_world.insert_resource(T(0.0, 0.0));
+            |mut t: ResMut<T>, dt: Res<DeltaTime>| {
+                t.0 += dt.0;
+                t.1 += 1.0;
+                if t.0 >= 1.0 {
+                    println!("{} FPS", t.1 / t.0);
+                    t.0 -= 1.0;
+                    t.1 = 0.0;
+                }
+            }
+        });
         ecs_world.add_schedule(schedule);
 
         ecs_world.spawn((
@@ -220,6 +228,7 @@ impl Game {
             ecs_world,
             block_select_object,
             show_select_object: true,
+            chunk_objects: FastHashMap::default()
         }
     }
 
@@ -252,10 +261,10 @@ impl Game {
         } = &event
         {
             self.chunk_meshifier.enable_ao = !self.chunk_meshifier.enable_ao;
-            for chunk in &mut self.ecs_world.resource_mut::<World>().chunks {
+            for chunk in self.ecs_world.resource_mut::<World>().chunks.values() {
                 chunk
                     .dirty
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                    .store(true, Ordering::Relaxed);
             }
         }
 
@@ -291,27 +300,25 @@ impl Game {
         self.ecs_world.resource::<Camera>()
     }
 
-    pub fn get_objects_to_render(&mut self, device: &wgpu::Device) -> Vec<Object> {
+    pub fn get_objects_to_render(&mut self, device: &wgpu::Device) -> impl Iterator<Item=&mut Object> {
         let world = self.ecs_world.resource::<World>();
         let block_registry = self.ecs_world.resource::<BlockRegistry>();
-        let mut objects = world
-            .chunks
-            .iter()
-            .map(|chunk| {
-                let mesh =
-                    self.chunk_meshifier
-                        .meshify(world, chunk, &self.atlas, block_registry, device);
-                let instance = Instance {
+
+        for chunk in world.chunks.values() {
+            if chunk.dirty.load(Ordering::Relaxed) || !self.chunk_objects.contains_key(&chunk.pos) {
+                let mesh = self.chunk_meshifier.meshify(world, chunk, &self.atlas, block_registry, device);
+                let object = Object::new(mesh, Instance {
                     position: chunk.pos.cast::<f32>().unwrap() * 16.0,
                     rotation: Quaternion::from_angle_z(cgmath::Deg(0.0)),
-                };
-
-                Object::new(mesh, instance, device)
-            })
-            .collect::<Vec<_>>();
-        if self.show_select_object {
-            objects.push(Object::new(self.block_select_object.mesh.clone(), self.block_select_object.instance().clone(), device));
+                }, device);
+                self.chunk_objects.insert(chunk.pos, object);
+            }
         }
-        objects
+        
+        if self.show_select_object {
+            // objects.push(Object::new(self.block_select_object.mesh.clone(), self.block_select_object.instance().clone(), device));
+        }
+        
+        self.chunk_objects.values_mut()
     }
 }

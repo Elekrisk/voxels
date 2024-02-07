@@ -1,6 +1,7 @@
 #![feature(generic_arg_infer)]
 #![feature(inline_const)]
 #![feature(int_roundings)]
+#![feature(let_chains)]
 
 mod assets;
 mod camera;
@@ -17,7 +18,7 @@ use std::{
 };
 
 use assets::AssetManager;
-use camera::{Camera, CameraController, Projection};
+use camera::{Camera, Frustum, Projection};
 use cgmath::{prelude::*, Quaternion, Vector2, Vector3};
 use game::Game;
 use mesh::{DrawModel, Material, Mesh, MeshVertex, Vertex};
@@ -123,6 +124,7 @@ struct State<'w> {
     depth_texture: Texture,
     asset_manager: AssetManager,
     game: Game,
+    frustum: Option<Frustum>,
 }
 
 impl<'w> State<'w> {
@@ -213,7 +215,7 @@ impl<'w> State<'w> {
 
         let camera = Camera::new((0.0, 5.0, 10.0), cgmath::Deg(-90.0), cgmath::Deg(-2.0));
         let projection =
-            Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
+            Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 10000.0);
 
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera, &projection);
@@ -324,6 +326,7 @@ impl<'w> State<'w> {
             texture_bind_group_layout,
             asset_manager,
             game,
+            frustum: None,
         }
     }
 
@@ -355,6 +358,10 @@ impl<'w> State<'w> {
                 ..
             } => {
                 self.game.keyboard_input(event.clone());
+                if *key == KeyCode::KeyR && state.is_pressed() {
+                    let camera = self.game.camera();
+                    self.frustum = Some(camera.frustum(&self.projection));
+                }
                 false
             },
             WindowEvent::MouseWheel { delta, .. } => {
@@ -391,7 +398,10 @@ impl<'w> State<'w> {
                 label: Some("Render Encoder"),
             });
 
-        let mut meshes_to_render = self.game.get_objects_to_render(&self.device);
+        let camera = self.game.camera();
+        let frustum = camera.frustum(&self.projection);
+
+        let mut meshes_to_render = self.game.get_objects_to_render(&self.device).collect::<Vec<_>>();
 
         for obj in &mut meshes_to_render {
             obj.update_instance_buffer(&self.queue);
@@ -428,6 +438,11 @@ impl<'w> State<'w> {
             render_pass.set_pipeline(&self.render_pipeline);
 
             for obj in &mut meshes_to_render {
+                let sphere = obj.bounding_sphere();
+                if /*let Some(frustum) = self.frustum.as_ref() &&*/ !frustum.contains_sphere(sphere) {
+                    continue;
+                }
+
                 render_pass.set_vertex_buffer(1, obj.instance_buffer.slice(..));
                 if obj.mesh.num_elements > 0 {
                     render_pass.draw_mesh_instanced(&obj.mesh, 0..1, &self.camera_bind_group);
@@ -449,6 +464,7 @@ pub async fn run() {
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     let mut state = State::new(window).await;
+    // return;
     let mut last_render_time = Instant::now();
     let mut first = true;
 

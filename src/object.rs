@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
+use cgmath::EuclideanSpace;
 use wgpu::util::DeviceExt;
 
-use crate::{mesh::Mesh, Instance};
-
+use crate::{camera::Sphere, mesh::Mesh, Instance};
 
 pub struct Object {
     pub mesh: Arc<Mesh>,
@@ -24,7 +24,14 @@ impl Object {
             mesh,
             instance,
             instance_dirty: false,
-            instance_buffer: buffer
+            instance_buffer: buffer,
+        }
+    }
+
+    pub fn bounding_sphere(&self) -> Sphere {
+        Sphere {
+            center: self.mesh.local_bounding_sphere.center + self.instance.position.to_vec(),
+            radius: self.mesh.local_bounding_sphere.radius,
         }
     }
 
@@ -42,7 +49,11 @@ impl Object {
 
     pub fn update_instance_buffer(&mut self, queue: &wgpu::Queue) {
         if self.instance_dirty {
-            queue.write_buffer(&self.instance_buffer, 0, bytemuck::bytes_of(&self.instance.to_raw()));
+            queue.write_buffer(
+                &self.instance_buffer,
+                0,
+                bytemuck::bytes_of(&self.instance.to_raw()),
+            );
             self.instance_dirty = false;
         }
     }

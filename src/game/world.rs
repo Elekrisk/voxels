@@ -5,47 +5,54 @@ use super::{
 use bevy_ecs::system::Resource;
 use cgmath::{EuclideanSpace, Point3, Vector3};
 use rand::Rng;
+use wgpu::naga::FastHashMap;
 
 #[derive(Resource)]
 pub struct World {
-    pub chunks: Vec<Chunk>,
+    pub chunks: FastHashMap<Point3<isize>, Chunk>,
 }
 
 impl World {
     pub fn new() -> Self {
-        Self { chunks: vec![] }
+        Self { chunks: FastHashMap::default() }
+    }
+
+    pub fn chunk(&self, pos: impl Into<Point3<isize>>) -> Option<&Chunk> {
+        self.chunks.get(&pos.into())
+    }
+
+    pub fn chunk_mut(&mut self, pos: impl Into<Point3<isize>>) -> Option<&mut Chunk> {
+        self.chunks.get_mut(&pos.into())
     }
 
     pub fn generate_chunk(&mut self, pos: impl Into<Point3<isize>>) {
         let mut chunk = Chunk::new(pos.into());
 
         for (_, block) in chunk.block_iter_mut() {
-            block.id.0 = 4; //rand::thread_rng().gen::<u8>() % 5;
+            block.id.0 = rand::thread_rng().gen::<u8>() % 5;
         }
 
-        self.chunks.push(chunk);
+        self.chunks.insert(chunk.pos, chunk);
     }
 
     pub fn create_empty_chunk(&mut self, pos: impl Into<Point3<isize>>) {
-        self.chunks.push(Chunk::new(pos.into()));
+        let pos = pos.into();
+        self.chunks.insert(pos, Chunk::new(pos));
     }
 
     pub fn delete_chunk(&mut self, pos: impl Into<Point3<isize>>) {
-        let pos = pos.into();
-        if let Some(i) = self.chunks.iter().position(|c| c.pos == pos) {
-            self.chunks.swap_remove(i);
-        }
+        self.chunks.remove(&pos.into());
     }
 
     pub fn place_block(&mut self, block: Block, pos: impl Into<Point3<isize>>) {
         let pos = pos.into();
         let chunk_pos = pos.map(|e| e.div_euclid(16));
         let rel_pos = pos.map(|e| e.rem_euclid(16) as _);
-        let chunk = if let Some(chunk) = self.chunks.iter_mut().find(|c| c.pos == chunk_pos) {
+        let chunk = if let Some(chunk) = self.chunks.get_mut(&chunk_pos) {
             chunk
         } else {
             self.create_empty_chunk(chunk_pos);
-            self.chunks.iter_mut().find(|c| c.pos == chunk_pos).unwrap()
+            self.chunks.get_mut(&chunk_pos).unwrap()
         };
 
         *chunk.block_mut(rel_pos) = block;
@@ -113,7 +120,7 @@ impl World {
         }
 
         loop {
-            let chunk = self.chunks.iter().find(|x| x.pos == chunk_pos);
+            let chunk = self.chunks.get(&chunk_pos);
 
             let mut block_hits = vec![];
 

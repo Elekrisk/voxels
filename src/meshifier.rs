@@ -34,6 +34,7 @@ impl ChunkMeshifier {
         block_registry: &BlockRegistry,
         device: &wgpu::Device,
     ) -> Arc<Mesh> {
+        println!("Meshifying chunk {},{},{}", chunk.pos.x, chunk.pos.y, chunk.pos.z);
         if !chunk.dirty.load(std::sync::atomic::Ordering::Relaxed)
             && self.cache.contains_key(&chunk.pos)
         {
@@ -41,6 +42,13 @@ impl ChunkMeshifier {
         }
 
         let mut builder = MeshBuilder::new();
+
+        let north_chunk = world.chunk(chunk.pos + Direction::North.normal());
+        let south_chunk = world.chunk(chunk.pos + Direction::South.normal());
+        let east_chunk = world.chunk(chunk.pos + Direction::East.normal());
+        let west_chunk = world.chunk(chunk.pos + Direction::West.normal());
+        let up_chunk = world.chunk(chunk.pos + Direction::Up.normal());
+        let down_chunk = world.chunk(chunk.pos + Direction::Down.normal());
 
         for x in 0..16 {
             for y in 0..16 {
@@ -68,7 +76,74 @@ impl ChunkMeshifier {
 
                     let uv = atlas.uv(attr.uv_coords);
 
-                    if z == 15 || is_transparent(0, 0, 1) {
+
+                    let build_north = if z == 15 {
+                        if let Some(chunk) = north_chunk {
+                            let block = chunk.block([x, y, 0]);
+                            block_registry.get(block.id).unwrap().transparent
+                        } else {
+                            true
+                        }
+                    } else {
+                        is_transparent(0, 0, 1)
+                    };
+
+                    let build_south = if z == 0 {
+                        if let Some(chunk) = south_chunk {
+                            let block = chunk.block([x, y, 15]);
+                            block_registry.get(block.id).unwrap().transparent
+                        } else {
+                            true
+                        }
+                    } else {
+                        is_transparent(0, 0, -1)
+                    };
+
+                    let build_east = if x == 0 {
+                        if let Some(chunk) = east_chunk {
+                            let block = chunk.block([15, y, z]);
+                            block_registry.get(block.id).unwrap().transparent
+                        } else {
+                            true
+                        }
+                    } else {
+                        is_transparent(-1, 0, 0)
+                    };
+
+                    let build_west = if x == 15 {
+                        if let Some(chunk) = west_chunk {
+                            let block = chunk.block([0, y, z]);
+                            block_registry.get(block.id).unwrap().transparent
+                        } else {
+                            true
+                        }
+                    } else {
+                        is_transparent(1, 0, 0)
+                    };
+
+                    let build_up = if y == 15 {
+                        if let Some(chunk) = up_chunk {
+                            let block = chunk.block([x, 0, z]);
+                            block_registry.get(block.id).unwrap().transparent
+                        } else {
+                            true
+                        }
+                    } else {
+                        is_transparent(0, 1, 0)
+                    };
+
+                    let build_down = if y == 0 {
+                        if let Some(chunk) = south_chunk {
+                            let block = chunk.block([x, 15, z]);
+                            block_registry.get(block.id).unwrap().transparent
+                        } else {
+                            true
+                        }
+                    } else {
+                        is_transparent(0, -1, 0)
+                    };
+
+                    if build_north {
                         // builder.add_face(offset, crate::mesh::Direction::North, uv);
                         self.build_face(
                             &mut builder,
@@ -80,7 +155,7 @@ impl ChunkMeshifier {
                             block_registry,
                         );
                     }
-                    if z == 0 || is_transparent(0, 0, -1) {
+                    if build_south {
                         // builder.add_face(offset, crate::mesh::Direction::South, uv);
                         self.build_face(
                             &mut builder,
@@ -92,7 +167,7 @@ impl ChunkMeshifier {
                             block_registry,
                         );
                     }
-                    if y == 15 || is_transparent(0, 1, 0) {
+                    if build_up {
                         // builder.add_face(offset, crate::mesh::Direction::Up, uv);
                         self.build_face(
                             &mut builder,
@@ -104,7 +179,7 @@ impl ChunkMeshifier {
                             block_registry,
                         );
                     }
-                    if y == 0 || is_transparent(0, -1, 0) {
+                    if build_down {
                         // builder.add_face(offset, crate::mesh::Direction::Down, uv);
                         self.build_face(
                             &mut builder,
@@ -116,7 +191,7 @@ impl ChunkMeshifier {
                             block_registry,
                         );
                     }
-                    if x == 15 || is_transparent(1, 0, 0) {
+                    if build_west {
                         // builder.add_face(offset, crate::mesh::Direction::West, uv);
                         self.build_face(
                             &mut builder,
@@ -128,7 +203,7 @@ impl ChunkMeshifier {
                             block_registry,
                         );
                     }
-                    if x == 0 || is_transparent(-1, 0, 0) {
+                    if build_east {
                         // builder.add_face(offset, crate::mesh::Direction::East, uv);
                         self.build_face(
                             &mut builder,
@@ -188,7 +263,7 @@ impl ChunkMeshifier {
             blocking >>= 1;
             let pos: Point3<isize> = pos
                 + direction.on_plane(offset.into()).to_vec()
-                + direction.normal().cast().unwrap();
+                + direction.normal();
             if pos.x < 0 || pos.y < 0 || pos.z < 0 || pos.x > 15 || pos.y > 15 || pos.z > 15 {
                 continue;
             }
