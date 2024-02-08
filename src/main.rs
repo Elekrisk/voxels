@@ -2,19 +2,23 @@
 #![feature(inline_const)]
 #![feature(int_roundings)]
 #![feature(let_chains)]
+#![feature(type_alias_impl_trait)]
 
 mod assets;
 mod camera;
+mod ecs_world;
 mod game;
+mod input;
 mod mesh;
 mod meshifier;
-mod texture;
 mod object;
-mod ecs_world;
-mod input;
+mod texture;
 
 use std::{
-    borrow::BorrowMut, ops::Rem, sync::Arc, time::{Duration, Instant}
+    borrow::BorrowMut,
+    ops::Rem,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use assets::AssetManager;
@@ -350,7 +354,7 @@ impl<'w> State<'w> {
         match event {
             WindowEvent::KeyboardInput {
                 event:
-                    event@KeyEvent {
+                    event @ KeyEvent {
                         physical_key: PhysicalKey::Code(key),
                         state,
                         ..
@@ -363,10 +367,8 @@ impl<'w> State<'w> {
                     self.frustum = Some(camera.frustum(&self.projection));
                 }
                 false
-            },
-            WindowEvent::MouseWheel { delta, .. } => {
-                true
             }
+            WindowEvent::MouseWheel { delta, .. } => true,
             WindowEvent::MouseInput { state, button, .. } => {
                 self.game.mouse_button_input(*button, *state);
                 true
@@ -401,7 +403,10 @@ impl<'w> State<'w> {
         let camera = self.game.camera();
         let frustum = camera.frustum(&self.projection);
 
-        let mut meshes_to_render = self.game.get_objects_to_render(&self.device).collect::<Vec<_>>();
+        let mut meshes_to_render = self
+            .game
+            .get_objects_to_render(&self.device)
+            .collect::<Vec<_>>();
 
         for obj in &mut meshes_to_render {
             obj.update_instance_buffer(&self.queue);
@@ -439,7 +444,9 @@ impl<'w> State<'w> {
 
             for obj in &mut meshes_to_render {
                 let sphere = obj.bounding_sphere();
-                if /*let Some(frustum) = self.frustum.as_ref() &&*/ !frustum.contains_sphere(sphere) {
+                if
+                /*let Some(frustum) = self.frustum.as_ref() &&*/
+                !frustum.contains_sphere(sphere) {
                     continue;
                 }
 
@@ -448,7 +455,6 @@ impl<'w> State<'w> {
                     render_pass.draw_mesh_instanced(&obj.mesh, 0..1, &self.camera_bind_group);
                 }
             }
-
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -480,8 +486,10 @@ pub async fn run() {
                 event: DeviceEvent::MouseMotion { delta },
                 ..
             } => {
-                state.game.mouse_input(<Vector2<f64>>::from([delta.0, delta.1]).cast().unwrap());
-            },
+                state
+                    .game
+                    .mouse_input(<Vector2<f64>>::from([delta.0, delta.1]).cast().unwrap());
+            }
             Event::WindowEvent {
                 ref event,
                 window_id,

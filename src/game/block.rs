@@ -19,7 +19,10 @@ pub struct Block {
 
 impl Default for Block {
     fn default() -> Self {
-        Self { id: BlockId(0), metadata: BlockMetadata(0) }
+        Self {
+            id: BlockId(0),
+            metadata: BlockMetadata(0),
+        }
     }
 }
 

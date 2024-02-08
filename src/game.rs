@@ -1,7 +1,13 @@
-use std::{collections::HashMap, io::Write, sync::{atomic::Ordering, Arc}, time::Duration};
+use std::{
+    collections::HashMap,
+    io::Write,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 
 use bevy_ecs::{
     component::Component,
+    entity::Entity,
     schedule::{Schedule, ScheduleLabel},
     system::{Res, ResMut, Resource},
 };
@@ -25,6 +31,7 @@ use crate::{
 use self::{
     atlas::Atlas,
     block::{BlockAttributes, BlockId, BlockRegistry},
+    chunk::{BlockPos, Chunk, ChunkPos},
     physics::Collider,
     player::PlayerController,
     world::World,
@@ -36,6 +43,7 @@ pub mod chunk;
 mod physics;
 mod player;
 pub mod world;
+mod worldgen;
 
 #[derive(Clone, Copy, PartialEq, Component)]
 pub struct Position(pub Point3<f32>);
@@ -48,7 +56,8 @@ pub struct Game {
     ecs_world: bevy_ecs::world::World,
     block_select_object: Object,
     show_select_object: bool,
-    chunk_objects: FastHashMap<Point3<isize>, Object>,
+    chunk_objects: FastHashMap<ChunkPos, Object>,
+    chunk_loading_distance: isize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ScheduleLabel)]
@@ -103,13 +112,13 @@ impl Game {
 
         let mut world = World::new();
 
-        for x in -20..=20 {
-            for z in -20..=20 {
-                for y in -0..=0 {
-                    world.generate_chunk([x, y, z]);
-                }
-            }
-        }
+        // for x in -0..=0 {
+        //     for z in -0..=0 {
+        //         for y in -0..=0 {
+        //             world.generate_chunk(Point3::new(x, y, z).into());
+        //         }
+        //     }
+        // }
 
         let camera = Camera::new([0.0, 0.0, 0.0], cgmath::Deg(0.0), cgmath::Deg(0.0));
 
@@ -155,7 +164,7 @@ impl Game {
         let block_select_object = Object::new(
             {
                 let mut builder = MeshBuilder::new();
-                let line_width = 0.025;
+                let line_width = 0.01;
                 let dist = -line_width / 2.0 + 0.001;
                 let far = 0.5 + dist + line_width / 2.0;
                 let close = 0.5 + dist - line_width / 2.0;
@@ -228,7 +237,8 @@ impl Game {
             ecs_world,
             block_select_object,
             show_select_object: true,
-            chunk_objects: FastHashMap::default()
+            chunk_objects: FastHashMap::default(),
+            chunk_loading_distance: 5
         }
     }
 
@@ -238,13 +248,63 @@ impl Game {
         self.ecs_world.run_schedule(ScheduleStage::Update);
         self.ecs_world.resource_mut::<Input>().end_frame();
 
+        let player_pos = self
+            .ecs_world
+            .query::<(&Position, &PlayerController)>()
+            .single(&self.ecs_world)
+            .0
+             .0;
+        let world = &mut self.ecs_world.resource_mut::<World>();
+
+        let mut chunks_to_destroy = vec![];
+
+        for chunk in world.chunks.values() {
+            let pos = chunk.pos.center();
+            let dist = (pos - player_pos).magnitude();
+
+            if dist > Chunk::SIZE as f32 * self.chunk_loading_distance as f32 {
+                chunks_to_destroy.push(chunk.pos);
+            }
+        }
+
+        for chunk_pos in chunks_to_destroy {
+            world.delete_chunk(chunk_pos);
+            self.chunk_objects.remove(&chunk_pos);
+            for dir in Direction::ALL {
+                if let Some(chunk) = world.chunk(chunk_pos + dir.normal()) {
+                    chunk.set_dirty(true);
+                }
+            }
+        }
+
+
+        let player_chunk_pos = BlockPos::from_point(player_pos).chunk_pos();
+
+        for x in -self.chunk_loading_distance..=self.chunk_loading_distance {
+            for y in -self.chunk_loading_distance..=self.chunk_loading_distance {
+                for z in -self.chunk_loading_distance..=self.chunk_loading_distance {
+                    let chunk_pos = ChunkPos::from(Point3::from(player_chunk_pos) + Vector3::from([x, y, z]));
+                    if world.chunk(chunk_pos).is_some() {
+                        continue;
+                    }
+                    let center = chunk_pos.center();
+
+                    if (center - player_pos).magnitude() <= Chunk::SIZE as f32 * self.chunk_loading_distance as f32 {
+                        world.generate_chunk(chunk_pos);
+                    }
+                }
+            }
+        }
+
+
+
         let camera = self.ecs_world.resource::<Camera>();
         let world = self.ecs_world.resource::<World>();
         let block_registry = self.ecs_world.resource::<BlockRegistry>();
         let pos = if let Some(hitinfo) =
-            world.raycast(camera.position, camera.forward(), 10000.0, block_registry)
+            world.raycast(camera.position, camera.forward(), 5.0, block_registry)
         {
-            hitinfo.position.cast().unwrap()
+            Point3::from(hitinfo.position).cast().unwrap()
         } else {
             [0.0, 0.0, 0.0].into()
         };
@@ -262,9 +322,7 @@ impl Game {
         {
             self.chunk_meshifier.enable_ao = !self.chunk_meshifier.enable_ao;
             for chunk in self.ecs_world.resource_mut::<World>().chunks.values() {
-                chunk
-                    .dirty
-                    .store(true, Ordering::Relaxed);
+                chunk.dirty.store(true, Ordering::Relaxed);
             }
         }
 
@@ -277,6 +335,27 @@ impl Game {
         {
             self.show_select_object = !self.show_select_object;
         }
+
+        if let KeyEvent {
+            text: Some(text),
+            state: ElementState::Pressed,
+            repeat: false,
+            ..
+        } = &event && text == "-"
+        {
+            self.chunk_loading_distance = 1.max(self.chunk_loading_distance - 1);
+        }
+
+        if let KeyEvent {
+            text: Some(text),
+            state: ElementState::Pressed,
+            repeat: false,
+            ..
+        } = &event && text == "+"
+        {
+            self.chunk_loading_distance += 1;
+        }
+
 
         self.ecs_world
             .resource_mut::<Input>()
@@ -300,25 +379,36 @@ impl Game {
         self.ecs_world.resource::<Camera>()
     }
 
-    pub fn get_objects_to_render(&mut self, device: &wgpu::Device) -> impl Iterator<Item=&mut Object> {
+    pub fn get_objects_to_render(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> impl Iterator<Item = &mut Object> {
         let world = self.ecs_world.resource::<World>();
         let block_registry = self.ecs_world.resource::<BlockRegistry>();
 
         for chunk in world.chunks.values() {
-            if chunk.dirty.load(Ordering::Relaxed) || !self.chunk_objects.contains_key(&chunk.pos) {
-                let mesh = self.chunk_meshifier.meshify(world, chunk, &self.atlas, block_registry, device);
-                let object = Object::new(mesh, Instance {
-                    position: chunk.pos.cast::<f32>().unwrap() * 16.0,
-                    rotation: Quaternion::from_angle_z(cgmath::Deg(0.0)),
-                }, device);
+            if chunk.get_dirty() || !self.chunk_objects.contains_key(&chunk.pos) {
+                let mesh =
+                    self.chunk_meshifier
+                        .meshify(world, chunk, &self.atlas, block_registry, device);
+                let object = Object::new(
+                    mesh,
+                    Instance {
+                        position: Point3::from(chunk.pos).cast::<f32>().unwrap() * 16.0,
+                        rotation: Quaternion::from_angle_z(cgmath::Deg(0.0)),
+                    },
+                    device,
+                );
                 self.chunk_objects.insert(chunk.pos, object);
             }
         }
-        
+
+        let mut extra = vec![];
+
         if self.show_select_object {
-            // objects.push(Object::new(self.block_select_object.mesh.clone(), self.block_select_object.instance().clone(), device));
+            extra.push(&mut self.block_select_object);
         }
-        
-        self.chunk_objects.values_mut()
+
+        self.chunk_objects.values_mut().chain(extra)
     }
 }

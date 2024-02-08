@@ -4,7 +4,7 @@ use bevy_ecs::{
 };
 use cgmath::{EuclideanSpace, InnerSpace, MetricSpace, Point3, Vector3, Zero};
 
-use super::{block::BlockRegistry, world::World, DeltaTime, Position, Velocity};
+use super::{block::BlockRegistry, chunk::BlockPos, world::World, DeltaTime, Position, Velocity};
 
 #[derive(Clone, Copy, PartialEq, Component)]
 pub struct Collider {
@@ -42,19 +42,19 @@ pub fn physics_system(
             pos.0.y + col.extents.y,
             pos.0.z + col.extents.z / 2.0,
         );
-
-        let min_block_pos = min.cast::<isize>().unwrap();
-        let max_block_pos = max.cast::<isize>().unwrap();
+        let min_block_pos = Point3::from(BlockPos::from_point(min));
+        let max_block_pos = Point3::from(BlockPos::from_point(max));
 
         let mut collisions = vec![];
 
         for block_pos_x in min_block_pos.x..=max_block_pos.x {
             for block_pos_y in min_block_pos.y..=max_block_pos.y {
                 for block_pos_z in min_block_pos.z..=max_block_pos.z {
-                    let block_pos = Point3::new(block_pos_x, block_pos_y, block_pos_z);
+                    let block_pos =
+                        BlockPos::from(Point3::new(block_pos_x, block_pos_y, block_pos_z));
 
-                    let chunk_pos = block_pos.map(|e| e.div_euclid(16));
-                    let rel_pos = block_pos.map(|e| e.rem_euclid(16) as _);
+                    let chunk_pos = block_pos.chunk_pos();
+                    let rel_pos = block_pos.rel_pos();
 
                     let Some(chunk) = world.chunk(chunk_pos) else {
                         continue;
@@ -67,8 +67,9 @@ pub fn physics_system(
 
                     collisions.push((
                         block_pos,
-                        (block_pos.cast::<f32>().unwrap() + Vector3::new(0.5, 0.5, 0.5))
-                            .distance2(min.midpoint(max)),
+                        (Point3::from(block_pos).cast::<f32>().unwrap()
+                            + Vector3::new(0.5, 0.5, 0.5))
+                        .distance2(min.midpoint(max)),
                     ));
                 }
             }
@@ -77,9 +78,9 @@ pub fn physics_system(
         collisions.sort_by(|(_, adist), (_, bdist)| adist.partial_cmp(bdist).unwrap());
 
         for (collision, _) in collisions {
-            let block_min_extended = collision.cast::<f32>().unwrap()
+            let block_min_extended = Point3::from(collision).cast::<f32>().unwrap()
                 - Vector3::new(col.extents.x / 2.0, col.extents.y, col.extents.z / 2.0);
-            let block_max_extended = collision.cast::<f32>().unwrap()
+            let block_max_extended = Point3::from(collision).cast::<f32>().unwrap()
                 + Vector3::new(col.extents.x / 2.0 + 1.0, 1.0, col.extents.z / 2.0 + 1.0);
 
             let overlap = Vector3::new(

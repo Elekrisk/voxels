@@ -1,7 +1,10 @@
 use bevy_ecs::system::Resource;
 use cgmath::{Vector2, Zero};
 use wgpu::naga::FastHashSet;
-use winit::{event::{ElementState, KeyEvent, MouseButton}, keyboard::{KeyCode, PhysicalKey}};
+use winit::{
+    event::{ElementState, KeyEvent, MouseButton},
+    keyboard::{KeyCode, PhysicalKey},
+};
 
 #[derive(Resource)]
 pub struct Input {
@@ -24,7 +27,13 @@ impl Input {
     }
 
     pub fn process_key_event(&mut self, event: KeyEvent) {
-        if let KeyEvent { physical_key: PhysicalKey::Code(key), state, repeat,  .. } = event {
+        if let KeyEvent {
+            physical_key: PhysicalKey::Code(key),
+            state,
+            repeat,
+            ..
+        } = event
+        {
             if state.is_pressed() {
                 if !repeat {
                     self.just_pressed_keys.insert(key);

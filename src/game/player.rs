@@ -1,7 +1,9 @@
 use std::f32::consts::FRAC_PI_2;
 
 use bevy_ecs::{
-    component::Component, entity::Entity, system::{Commands, Query, Res, ResMut}
+    component::Component,
+    entity::Entity,
+    system::{Commands, Query, Res, ResMut},
 };
 use cgmath::{InnerSpace, Point3, Rad, Vector3, Zero};
 use winit::{event::MouseButton, keyboard::KeyCode};
@@ -56,7 +58,7 @@ pub fn update_system(
     mut camera: ResMut<Camera>,
     mut world: ResMut<World>,
     block_registry: Res<BlockRegistry>,
-    mut commands: Commands
+    mut commands: Commands,
 ) {
     for (mut pc, pos, mut vel, mut col) in &mut query {
         let mut v = Vector3::zero();
@@ -120,7 +122,7 @@ pub fn update_system(
             || input.is_mouse_pressed(MouseButton::Left) && pc.mine_cooldown <= 0.0
         {
             if let Some(hitinfo) =
-                world.raycast(camera.position, camera.forward(), 10000.0, &block_registry)
+                world.raycast(camera.position, camera.forward(), 5.0, &block_registry)
             {
                 world.place_block(
                     Block {
@@ -144,7 +146,8 @@ pub fn update_system(
                         id: pc.place_block_id,
                         metadata: BlockMetadata(0),
                     },
-                    hitinfo.position + hitinfo.normal.cast::<isize>().unwrap(),
+                    (Point3::from(hitinfo.position) + hitinfo.normal.cast::<isize>().unwrap())
+                        .into(),
                 );
                 pc.place_cooldown = 0.25;
             }

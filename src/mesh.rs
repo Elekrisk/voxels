@@ -5,7 +5,7 @@ use std::{
 
 use wgpu::util::DeviceExt;
 
-use crate::{camera::Sphere, texture::Texture};
+use crate::{camera::Sphere, game::chunk::ChunkPos, texture::Texture};
 
 pub trait Vertex {
     fn desc() -> wgpu::VertexBufferLayout<'static>;
@@ -75,7 +75,8 @@ impl Mesh {
             .iter()
             .map(|v| (Vector3::from(v.position) - center).magnitude2())
             .reduce(f32::max)
-            .unwrap_or(0.0).sqrt();
+            .unwrap_or(0.0)
+            .sqrt();
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{:?} Vertex Buffer", "TEMP!! ")),
@@ -90,7 +91,10 @@ impl Mesh {
 
         Self {
             vertex_buffer,
-            local_bounding_sphere: Sphere { center: Point3::from_vec(center), radius },
+            local_bounding_sphere: Sphere {
+                center: Point3::from_vec(center),
+                radius,
+            },
             index_buffer,
             num_elements: indices.len() as u32,
             material,
@@ -167,13 +171,16 @@ where
     }
 }
 
-use cgmath::{ElementWise, EuclideanSpace, InnerSpace, One, Point2, Point3, Vector2, Vector3, Zero};
+use cgmath::{
+    ElementWise, EuclideanSpace, InnerSpace, One, Point2, Point3, Vector2, Vector3, Zero,
+};
 
 pub struct MeshBuilder {
     vertices: Vec<MeshVertex>,
     indices: Vec<u32>,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub enum Direction {
     /// +Z
     North,
@@ -189,7 +196,80 @@ pub enum Direction {
     Down,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Vector3Accessor {
+    X,
+    Y,
+    Z,
+}
+
+impl Vector3Accessor {
+    pub fn of<T: D3Accessible>(self, vec: T) -> T::Element {
+        vec.get(self)
+    }
+
+    pub fn set<T: D3Accessible>(self, vec: &mut T, value: T::Element) {
+        vec.set(self, value);
+    }
+}
+
+pub trait D3Accessible {
+    type Element;
+
+    fn get(self, accessor: Vector3Accessor) -> Self::Element;
+    fn set(&mut self, accessor: Vector3Accessor, value: Self::Element);
+}
+
+impl<T> D3Accessible for Vector3<T> {
+    type Element = T;
+
+    fn get(self, accessor: Vector3Accessor) -> Self::Element {
+        match accessor {
+            Vector3Accessor::X => self.x,
+            Vector3Accessor::Y => self.y,
+            Vector3Accessor::Z => self.z,
+        }
+    }
+
+    fn set(&mut self, accessor: Vector3Accessor, value: Self::Element) {
+        match accessor {
+            Vector3Accessor::X => self.x = value,
+            Vector3Accessor::Y => self.y = value,
+            Vector3Accessor::Z => self.z = value,
+        }
+    }
+}
+
+impl<T> D3Accessible for Point3<T> {
+    type Element = T;
+
+    fn get(self, accessor: Vector3Accessor) -> Self::Element {
+        match accessor {
+            Vector3Accessor::X => self.x,
+            Vector3Accessor::Y => self.y,
+            Vector3Accessor::Z => self.z,
+        }
+    }
+
+    fn set(&mut self, accessor: Vector3Accessor, value: Self::Element) {
+        match accessor {
+            Vector3Accessor::X => self.x = value,
+            Vector3Accessor::Y => self.y = value,
+            Vector3Accessor::Z => self.z = value,
+        }
+    }
+}
+
 impl Direction {
+    pub const ALL: [Direction; 6] = [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+        Direction::Up,
+        Direction::Down,
+    ];
+
     pub fn normal<T: Zero<Output = T> + One + Neg<Output = T> + Clone>(&self) -> Vector3<T> {
         match self {
             Direction::North => [T::zero(), T::zero(), T::one()],
@@ -202,7 +282,40 @@ impl Direction {
         .into()
     }
 
-    pub fn on_plane<T: Zero + Neg<Output = T> + Clone>(&self, coords: Point2<T>) -> Point3<T> {
+    pub fn inverse(self) -> Self {
+        match self {
+            Direction::North => Self::South,
+            Direction::East => Self::West,
+            Direction::South => Self::North,
+            Direction::West => Self::East,
+            Direction::Up => Self::Down,
+            Direction::Down => Self::Up,
+        }
+    }
+
+    pub fn chunk_limit(self) -> usize {
+        match self {
+            Direction::North => 15,
+            Direction::East => 0,
+            Direction::South => 0,
+            Direction::West => 15,
+            Direction::Up => 15,
+            Direction::Down => 0,
+        }
+    }
+
+    pub fn axle(self) -> Vector3Accessor {
+        match self {
+            Direction::North => Vector3Accessor::Z,
+            Direction::East => Vector3Accessor::X,
+            Direction::South => Vector3Accessor::Z,
+            Direction::West => Vector3Accessor::X,
+            Direction::Up => Vector3Accessor::Y,
+            Direction::Down => Vector3Accessor::Y,
+        }
+    }
+
+    pub fn on_plane<T: Zero + Neg<Output = T> + Clone>(self, coords: Point2<T>) -> Point3<T> {
         match self {
             Direction::North => [coords.x, coords.y, T::zero()],
             Direction::East => [T::zero(), coords.y, coords.x],

@@ -88,22 +88,15 @@ impl Camera {
         let aux = ((nc - right * wnear) - self.position).normalize();
         let left = Plane {
             normal: aux.cross(up),
-            point: nc - right * hnear,
+            point: nc - right * wnear,
         };
-        let aux = ((nc + right * hnear) - self.position).normalize();
+        let aux = ((nc + right * wnear) - self.position).normalize();
         let right = Plane {
             normal: up.cross(aux),
-            point: nc + right * hnear,
+            point: nc + right * wnear,
         };
 
-        Frustum::new(
-            near,
-            far,
-            left,
-            right,
-            top,
-            bottom,
-        )
+        Frustum::new(near, far, left, right, top, bottom)
     }
 }
 
@@ -180,7 +173,8 @@ pub struct Plane {
 
 impl Plane {
     pub fn sdf(&self, point: Point3<f32>) -> f32 {
-        self.normal.dot(point - self.point)
+        // self.normal.dot(point - self.point)
+        (point - self.point).dot(self.normal)
     }
 }
 

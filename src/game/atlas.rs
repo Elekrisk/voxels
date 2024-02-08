@@ -4,7 +4,6 @@ use cgmath::Point2;
 
 use crate::{mesh::Material, texture::Texture};
 
-
 pub struct Atlas {
     pub material: Arc<Material>,
     pub cell_size: usize,
@@ -33,13 +32,11 @@ impl Atlas {
         let top_left = Point2::new(coords.x as f32 * step_x, coords.y as f32 * step_y);
         let top_right = Point2::new((coords.x + 1) as f32 * step_x, coords.y as f32 * step_y);
         let bottom_left = Point2::new(coords.x as f32 * step_x, (coords.y + 1) as f32 * step_y);
-        let bottom_right = Point2::new((coords.x + 1) as f32 * step_x, (coords.y + 1) as f32 * step_y);
+        let bottom_right = Point2::new(
+            (coords.x + 1) as f32 * step_x,
+            (coords.y + 1) as f32 * step_y,
+        );
 
-        [
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        ]
+        [top_left, top_right, bottom_right, bottom_left]
     }
 }
