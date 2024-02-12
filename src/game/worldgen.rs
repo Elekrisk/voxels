@@ -2,7 +2,7 @@ use cgmath::{Point3, Vector2};
 use noise::{BasicMulti, NoiseFn, OpenSimplex, Perlin, Simplex};
 use rand::{thread_rng, Rng};
 
-use super::chunk::{Chunk, ChunkPos, ChunkRelativeBlockPos};
+use super::{block::{Block, BlockId, BlockMetadata}, chunk::{Chunk, ChunkPos, ChunkRelativeBlockPos}};
 
 type Noise = impl NoiseFn<f64, 2>;
 
@@ -57,6 +57,10 @@ impl Worldgen {
                         .block_mut(Point3::new(x, y, z).cast().unwrap().into())
                         .id
                         .0 = id;
+                    // chunk.place_block(Point3::new(x, y, z).cast().unwrap().into(), Block {
+                    //     id: BlockId(id),
+                    //     metadata: BlockMetadata(0)
+                    // });
                 }
             }
         }

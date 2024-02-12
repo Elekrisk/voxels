@@ -22,106 +22,118 @@ pub fn physics_system(
     block_registry: Res<BlockRegistry>,
 ) {
     for (mut pos, mut vel, col) in &mut query {
-        let prev_pos = pos.0;
-        pos.0 += vel.0 * dt.0;
-        if col.gravity {
-            vel.0 += GRAVITY * dt.0;
-        }
+        let d = (vel.0 * dt.0).magnitude();
 
-        if !col.enabled {
-            continue;
-        }
+        let c = if d > 0.4 {
+            // println!("{} = {} steps à {}", d, (d / 0.4).ceil(), d / (d / 0.4).ceil());
+            (d / 0.4).ceil() as usize
+        } else {
+            1
+        };
 
-        let min = Point3::new(
-            pos.0.x - col.extents.x / 2.0,
-            pos.0.y,
-            pos.0.z - col.extents.z / 2.0,
-        );
-        let max = Point3::new(
-            pos.0.x + col.extents.x / 2.0,
-            pos.0.y + col.extents.y,
-            pos.0.z + col.extents.z / 2.0,
-        );
-        let min_block_pos = Point3::from(BlockPos::from_point(min));
-        let max_block_pos = Point3::from(BlockPos::from_point(max));
-
-        let mut collisions = vec![];
-
-        for block_pos_x in min_block_pos.x..=max_block_pos.x {
-            for block_pos_y in min_block_pos.y..=max_block_pos.y {
-                for block_pos_z in min_block_pos.z..=max_block_pos.z {
-                    let block_pos =
-                        BlockPos::from(Point3::new(block_pos_x, block_pos_y, block_pos_z));
-
-                    let chunk_pos = block_pos.chunk_pos();
-                    let rel_pos = block_pos.rel_pos();
-
-                    let Some(chunk) = world.chunk(chunk_pos) else {
-                        continue;
-                    };
-                    let block = chunk.block(rel_pos);
-                    let attrs = block_registry.get(block.id).unwrap();
-                    if attrs.invisible {
-                        continue;
-                    }
-
-                    collisions.push((
-                        block_pos,
-                        (Point3::from(block_pos).cast::<f32>().unwrap()
-                            + Vector3::new(0.5, 0.5, 0.5))
-                        .distance2(min.midpoint(max)),
-                    ));
-                }
+        for _ in 0..c {
+            let prev_pos = pos.0;
+            pos.0 += vel.0 * (dt.0 / c as f32);
+            if col.gravity {
+                vel.0 += GRAVITY * dt.0;
             }
-        }
 
-        collisions.sort_by(|(_, adist), (_, bdist)| adist.partial_cmp(bdist).unwrap());
+            if !col.enabled {
+                continue;
+            }
 
-        for (collision, _) in collisions {
-            let block_min_extended = Point3::from(collision).cast::<f32>().unwrap()
-                - Vector3::new(col.extents.x / 2.0, col.extents.y, col.extents.z / 2.0);
-            let block_max_extended = Point3::from(collision).cast::<f32>().unwrap()
-                + Vector3::new(col.extents.x / 2.0 + 1.0, 1.0, col.extents.z / 2.0 + 1.0);
-
-            let overlap = Vector3::new(
-                (block_max_extended.x - pos.0.x).min(pos.0.x - block_min_extended.x),
-                (block_max_extended.y - pos.0.y).min(pos.0.y - block_min_extended.y),
-                (block_max_extended.z - pos.0.z).min(pos.0.z - block_min_extended.z),
+            let min = Point3::new(
+                pos.0.x - col.extents.x / 2.0,
+                pos.0.y,
+                pos.0.z - col.extents.z / 2.0,
             );
+            let max = Point3::new(
+                pos.0.x + col.extents.x / 2.0,
+                pos.0.y + col.extents.y,
+                pos.0.z + col.extents.z / 2.0,
+            );
+            let min_block_pos = Point3::from(BlockPos::from_point(min));
+            let max_block_pos = Point3::from(BlockPos::from_point(max));
 
-            if overlap.x <= 0.0 || overlap.y <= 0.0 || overlap.z <= 0.0 {
-                continue;
+            let mut collisions = vec![];
+
+            for block_pos_x in min_block_pos.x..=max_block_pos.x {
+                for block_pos_y in min_block_pos.y..=max_block_pos.y {
+                    for block_pos_z in min_block_pos.z..=max_block_pos.z {
+                        let block_pos =
+                            BlockPos::from(Point3::new(block_pos_x, block_pos_y, block_pos_z));
+
+                        let chunk_pos = block_pos.chunk_pos();
+                        let rel_pos = block_pos.rel_pos();
+
+                        let Some(chunk) = world.chunk(chunk_pos) else {
+                            continue;
+                        };
+                        let block = chunk.block(rel_pos);
+                        let attrs = block_registry.get(block.id).unwrap();
+                        if attrs.invisible {
+                            continue;
+                        }
+
+                        collisions.push((
+                            block_pos,
+                            (Point3::from(block_pos).cast::<f32>().unwrap()
+                                + Vector3::new(0.5, 0.5, 0.5))
+                            .distance2(min.midpoint(max)),
+                        ));
+                    }
+                }
             }
 
-            let dir = pos.0 - prev_pos;
-            if dir.is_zero() {
-                continue;
-            }
-            let dir = dir.normalize();
+            collisions.sort_by(|(_, adist), (_, bdist)| adist.partial_cmp(bdist).unwrap());
 
-            let scaled_dir = Vector3::new(dir.x / overlap.x, dir.y / overlap.y, dir.z / overlap.z);
+            for (collision, _) in collisions {
+                let block_min_extended = Point3::from(collision).cast::<f32>().unwrap()
+                    - Vector3::new(col.extents.x / 2.0, col.extents.y, col.extents.z / 2.0);
+                let block_max_extended = Point3::from(collision).cast::<f32>().unwrap()
+                    + Vector3::new(col.extents.x / 2.0 + 1.0, 1.0, col.extents.z / 2.0 + 1.0);
 
-            // println!("{overlap:?}");
-            // println!("{dir:?}");
-            // println!("{scaled_dir:?}");
+                let overlap = Vector3::new(
+                    (block_max_extended.x - pos.0.x).min(pos.0.x - block_min_extended.x),
+                    (block_max_extended.y - pos.0.y).min(pos.0.y - block_min_extended.y),
+                    (block_max_extended.z - pos.0.z).min(pos.0.z - block_min_extended.z),
+                );
 
-            let diff = pos.0 - block_min_extended.midpoint(block_max_extended);
-            // println!("{diff:?}");
-
-            if scaled_dir.x.abs() >= scaled_dir.y.abs().max(scaled_dir.z.abs()) {
-                pos.0.x -= overlap.x * scaled_dir.x.signum();
-                if diff.x.signum() != vel.0.x.signum() {
-                    vel.0.x = 0.0;
+                if overlap.x <= 0.0 || overlap.y <= 0.0 || overlap.z <= 0.0 {
+                    continue;
                 }
-            } else if scaled_dir.y.abs() >= scaled_dir.x.abs().max(scaled_dir.z.abs()) {
-                pos.0.y -= overlap.y * scaled_dir.y.signum();
-                if diff.y.signum() != vel.0.y.signum() {
-                    vel.0.y = 0.0;
+
+                let dir = pos.0 - prev_pos;
+                if dir.is_zero() {
+                    continue;
                 }
-            } else if scaled_dir.z.abs() >= scaled_dir.x.abs().max(scaled_dir.y.abs()) {
-                pos.0.z -= overlap.z * scaled_dir.z.signum();
-                if diff.z.signum() != vel.0.z.signum() {
-                    vel.0.z = 0.0;
+                let dir = dir.normalize();
+
+                let scaled_dir =
+                    Vector3::new(dir.x / overlap.x, dir.y / overlap.y, dir.z / overlap.z);
+
+                // println!("{overlap:?}");
+                // println!("{dir:?}");
+                // println!("{scaled_dir:?}");
+
+                let diff = pos.0 - block_min_extended.midpoint(block_max_extended);
+                // println!("{diff:?}");
+
+                if scaled_dir.x.abs() >= scaled_dir.y.abs().max(scaled_dir.z.abs()) {
+                    pos.0.x -= overlap.x * scaled_dir.x.signum();
+                    if diff.x.signum() != vel.0.x.signum() {
+                        vel.0.x = 0.0;
+                    }
+                } else if scaled_dir.y.abs() >= scaled_dir.x.abs().max(scaled_dir.z.abs()) {
+                    pos.0.y -= overlap.y * scaled_dir.y.signum();
+                    if diff.y.signum() != vel.0.y.signum() {
+                        vel.0.y = 0.0;
+                    }
+                } else if scaled_dir.z.abs() >= scaled_dir.x.abs().max(scaled_dir.y.abs()) {
+                    pos.0.z -= overlap.z * scaled_dir.z.signum();
+                    if diff.z.signum() != vel.0.z.signum() {
+                        vel.0.z = 0.0;
+                    }
                 }
             }
         }

@@ -15,9 +15,13 @@ use crate::{
         physics,
     },
     input::Input,
+    server::{connection::Transport, message::MessageToServer},
 };
 
-use super::{block::BlockRegistry, physics::Collider, world::World, DeltaTime, Position, Velocity};
+use super::{
+    block::BlockRegistry, physics::Collider, world::World, DeltaTime, MessageQueue, Position,
+    Velocity,
+};
 
 #[derive(Clone, Component)]
 pub struct PlayerController {
@@ -57,6 +61,7 @@ pub fn update_system(
     input: Res<Input>,
     mut camera: ResMut<Camera>,
     mut world: ResMut<World>,
+    mut transport: ResMut<MessageQueue>,
     block_registry: Res<BlockRegistry>,
     mut commands: Commands,
 ) {
@@ -124,14 +129,21 @@ pub fn update_system(
             if let Some(hitinfo) =
                 world.raycast(camera.position, camera.forward(), 5.0, &block_registry)
             {
-                world.place_block(
-                    Block {
-                        id: BlockId(0),
-                        metadata: BlockMetadata(0),
-                    },
-                    hitinfo.position,
-                );
+                let pos = hitinfo.position;
+                let block = Block {
+                    id: BlockId(0),
+                    metadata: BlockMetadata(0),
+                };
+                world.place_block(block, pos);
                 pc.mine_cooldown = 0.25;
+
+                transport
+                    .0
+                    .send_blocking(MessageToServer::ReplaceBlock {
+                        pos,
+                        new_block: block,
+                    })
+                    .unwrap();
             }
         }
 
@@ -141,15 +153,23 @@ pub fn update_system(
             if let Some(hitinfo) =
                 world.raycast(camera.position, camera.forward(), 10000.0, &block_registry)
             {
-                world.place_block(
-                    Block {
-                        id: pc.place_block_id,
-                        metadata: BlockMetadata(0),
-                    },
-                    (Point3::from(hitinfo.position) + hitinfo.normal.cast::<isize>().unwrap())
-                        .into(),
-                );
+                let pos = (Point3::from(hitinfo.position)
+                    + hitinfo.normal.cast::<isize>().unwrap())
+                .into();
+                let block = Block {
+                    id: pc.place_block_id,
+                    metadata: BlockMetadata(0),
+                };
+                world.place_block(block, pos);
                 pc.place_cooldown = 0.25;
+
+                transport
+                    .0
+                    .send_blocking(MessageToServer::ReplaceBlock {
+                        pos,
+                        new_block: block,
+                    })
+                    .unwrap();
             }
         }
 

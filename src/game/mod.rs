@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use async_std::channel::{Receiver, Sender};
 use bevy_ecs::{
     component::Component,
     entity::Entity,
@@ -12,7 +13,12 @@ use bevy_ecs::{
     system::{Res, ResMut, Resource},
 };
 use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Rotation3, Vector2, Vector3};
-use wgpu::{naga::FastHashMap, RenderPass};
+use futures::{pin_mut, TryStreamExt};
+use quinn::{Endpoint, TransportConfig};
+use wgpu::{
+    naga::{FastHashMap, FastHashSet},
+    RenderPass,
+};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
     keyboard::{KeyCode, PhysicalKey},
@@ -25,6 +31,10 @@ use crate::{
     mesh::{Direction, DrawModel, Mesh, MeshBuilder, MeshVertex},
     meshifier::ChunkMeshifier,
     object::Object,
+    server::{
+        connection::{RemoteTransport, Respond, SkipServerVerification, Transaction, Transport},
+        message::{MessageToClient, MessageToServer},
+    },
     Instance,
 };
 
@@ -58,6 +68,12 @@ pub struct Game {
     show_select_object: bool,
     chunk_objects: FastHashMap<ChunkPos, Object>,
     chunk_loading_distance: isize,
+    server_connection: Transport,
+    load_chunk_tx: Sender<Transaction<MessageToClient>>,
+    chunk_loaded_rx: Receiver<Vec<Chunk>>,
+    loading_chunks: FastHashSet<ChunkPos>,
+    msg_queue_rx: Receiver<MessageToServer>,
+    msg_from_server_rx: Receiver<(MessageToClient, Respond<MessageToServer>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ScheduleLabel)]
@@ -68,8 +84,11 @@ pub enum ScheduleStage {
 #[derive(Clone, Copy, PartialEq, Resource)]
 pub struct DeltaTime(pub f32);
 
+#[derive(Clone, Resource)]
+pub struct MessageQueue(Sender<MessageToServer>);
+
 impl Game {
-    pub fn new(asset_manager: &mut AssetManager, device: &wgpu::Device) -> Self {
+    pub async fn new(asset_manager: &mut AssetManager, device: &wgpu::Device) -> Self {
         let material = asset_manager.load_material("assets/atlas.png").unwrap();
         let atlas = Atlas::new(material.clone(), 16);
 
@@ -142,7 +161,7 @@ impl Game {
                 t.0 += dt.0;
                 t.1 += 1.0;
                 if t.0 >= 1.0 {
-                    println!("{} FPS", t.1 / t.0);
+                    // println!("{} FPS", t.1 / t.0);
                     t.0 -= 1.0;
                     t.1 = 0.0;
                 }
@@ -231,6 +250,60 @@ impl Game {
             device,
         );
 
+        let client = quinn::Endpoint::client("[::]:0".parse().unwrap()).unwrap();
+        let client_config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+            .with_no_client_auth();
+        let mut tc = TransportConfig::default();
+        tc.keep_alive_interval(Some(Duration::from_secs_f32(5.0).try_into().unwrap()));
+        let mut client_config = quinn::ClientConfig::new(Arc::new(client_config));
+        client_config.transport_config(Arc::new(tc));
+        println!("Connecting...");
+        let connection = client
+            .connect_with(client_config, "[::1]:1234".parse().unwrap(), "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        println!("Connected!");
+
+        let (load_chunk_tx, load_chunk_rx) =
+            async_std::channel::unbounded::<Transaction<MessageToClient>>();
+        let (chunk_loaded_tx, chunk_loaded_rx) = async_std::channel::unbounded::<Vec<Chunk>>();
+
+        async_std::task::spawn(async move {
+            loop {
+                let mut transaction = load_chunk_rx.recv().await.unwrap();
+                let tx = chunk_loaded_tx.clone();
+                async_std::task::spawn(async move {
+                    let stream = transaction.stream();
+                    pin_mut!(stream);
+                    while let Ok(Some(msg)) = stream.try_next().await {
+                        let chunks = match msg {
+                            MessageToClient::Chunk(chunk) => vec![chunk],
+                            MessageToClient::Chunks(chunks) => chunks,
+                            _ => unreachable!(),
+                        };
+                        tx.send(chunks).await.unwrap();
+                    }
+                });
+            }
+        });
+
+        let (msg_from_server_tx, msg_from_server_rx) = async_std::channel::unbounded();
+        let transport = Transport::Remote(RemoteTransport { connection });
+        let mut tp = transport.clone();
+        async_std::task::spawn(async move {
+            loop {
+                let (msg, respond) = tp.accept_transact::<MessageToClient, MessageToServer>().await.unwrap();
+
+                msg_from_server_tx.send((msg, respond)).await.unwrap();
+            }
+        });
+
+        let (msg_queue_tx, msg_queue_rx) = async_std::channel::unbounded();
+        ecs_world.insert_resource(MessageQueue(msg_queue_tx));
+
         Self {
             atlas,
             chunk_meshifier: ChunkMeshifier::new(),
@@ -238,11 +311,17 @@ impl Game {
             block_select_object,
             show_select_object: true,
             chunk_objects: FastHashMap::default(),
-            chunk_loading_distance: 5
+            chunk_loading_distance: 5,
+            server_connection: transport,
+            load_chunk_tx,
+            chunk_loaded_rx,
+            loading_chunks: FastHashSet::default(),
+            msg_queue_rx,
+            msg_from_server_rx,
         }
     }
 
-    pub fn update(&mut self, dt: Duration) {
+    pub async fn update(&mut self, dt: Duration) {
         std::io::stdout().flush().unwrap();
         self.ecs_world.resource_mut::<DeltaTime>().0 = dt.as_secs_f32();
         self.ecs_world.run_schedule(ScheduleStage::Update);
@@ -256,15 +335,43 @@ impl Game {
              .0;
         let world = &mut self.ecs_world.resource_mut::<World>();
 
+        while let Ok((msg, respond)) = self.msg_from_server_rx.try_recv() {
+            match msg {
+                MessageToClient::Ok => todo!(),
+                MessageToClient::EntitiesPositionUpdate { entity, new_position } => todo!(),
+                MessageToClient::Chunk(_) => todo!(),
+                MessageToClient::Chunks(_) => todo!(),
+                MessageToClient::BlockPlaced { pos, new_block } => {
+                    world.place_block(new_block, pos);
+                },
+            }
+        }
+
+        while let Ok(x) = self.msg_queue_rx.try_recv() {
+            self.server_connection.transact::<_, ()>(&x).await.unwrap();
+        }
+
         let mut chunks_to_destroy = vec![];
+
+        let allowed_distance = Chunk::SIZE as f32
+            * Chunk::SIZE as f32
+            * self.chunk_loading_distance as f32
+            * self.chunk_loading_distance as f32;
 
         for chunk in world.chunks.values() {
             let pos = chunk.pos.center();
-            let dist = (pos - player_pos).magnitude();
+            let dist2 = (pos - player_pos).magnitude2();
 
-            if dist > Chunk::SIZE as f32 * self.chunk_loading_distance as f32 {
+            if dist2 > allowed_distance {
                 chunks_to_destroy.push(chunk.pos);
             }
+        }
+
+        if !chunks_to_destroy.is_empty() {
+            self.server_connection
+                .transact::<_, ()>(&MessageToServer::UnloadChunks(chunks_to_destroy.clone()))
+                .await
+                .unwrap();
         }
 
         for chunk_pos in chunks_to_destroy {
@@ -277,26 +384,54 @@ impl Game {
             }
         }
 
-
         let player_chunk_pos = BlockPos::from_point(player_pos).chunk_pos();
 
+        let mut chunks_to_load = vec![];
         for x in -self.chunk_loading_distance..=self.chunk_loading_distance {
             for y in -self.chunk_loading_distance..=self.chunk_loading_distance {
                 for z in -self.chunk_loading_distance..=self.chunk_loading_distance {
-                    let chunk_pos = ChunkPos::from(Point3::from(player_chunk_pos) + Vector3::from([x, y, z]));
-                    if world.chunk(chunk_pos).is_some() {
+                    let chunk_pos =
+                        ChunkPos::from(Point3::from(player_chunk_pos) + Vector3::from([x, y, z]));
+                    if world.chunk(chunk_pos).is_some() || self.loading_chunks.contains(&chunk_pos)
+                    {
                         continue;
                     }
                     let center = chunk_pos.center();
 
-                    if (center - player_pos).magnitude() <= Chunk::SIZE as f32 * self.chunk_loading_distance as f32 {
-                        world.generate_chunk(chunk_pos);
+                    let dist2 = (center - player_pos).magnitude2();
+
+                    if dist2 <= allowed_distance {
+                        // world.generate_chunk(chunk_pos);
+                        chunks_to_load.push(chunk_pos);
                     }
                 }
             }
         }
 
+        chunks_to_load.sort_by(|a, b| {
+            let dista = (a.center() - player_pos).magnitude2();
+            let distb = (b.center() - player_pos).magnitude2();
+            dista.partial_cmp(&distb).unwrap()
+        });
 
+        if !chunks_to_load.is_empty() {
+            self.loading_chunks.extend(&chunks_to_load);
+            let chunk_load = self
+                .server_connection
+                .transact::<MessageToServer, MessageToClient>(&MessageToServer::GetChunks(
+                    chunks_to_load,
+                ))
+                .await
+                .unwrap();
+            self.load_chunk_tx.send_blocking(chunk_load).unwrap();
+        }
+
+        while let Ok(chunks) = self.chunk_loaded_rx.try_recv() {
+            for chunk in chunks {
+                self.loading_chunks.remove(&chunk.pos);
+                world.chunks.insert(chunk.pos, chunk);
+            }
+        }
 
         let camera = self.ecs_world.resource::<Camera>();
         let world = self.ecs_world.resource::<World>();
@@ -341,7 +476,8 @@ impl Game {
             state: ElementState::Pressed,
             repeat: false,
             ..
-        } = &event && text == "-"
+        } = &event
+            && text == "-"
         {
             self.chunk_loading_distance = 1.max(self.chunk_loading_distance - 1);
         }
@@ -351,11 +487,11 @@ impl Game {
             state: ElementState::Pressed,
             repeat: false,
             ..
-        } = &event && text == "+"
+        } = &event
+            && text == "+"
         {
             self.chunk_loading_distance += 1;
         }
-
 
         self.ecs_world
             .resource_mut::<Input>()

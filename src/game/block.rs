@@ -2,16 +2,17 @@ use std::sync::Arc;
 
 use bevy_ecs::system::Resource;
 use cgmath::Point2;
+use serde::{Deserialize, Serialize};
 
 use crate::mesh::Material;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BlockId(pub u8);
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BlockMetadata(pub u8);
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Block {
     pub id: BlockId,
     pub metadata: BlockMetadata,

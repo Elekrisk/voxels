@@ -13,7 +13,7 @@ use wgpu::naga::FastHashMap;
 #[derive(Resource)]
 pub struct World {
     pub chunks: FastHashMap<ChunkPos, Chunk>,
-    worldgen: Worldgen,
+    pub worldgen: Worldgen,
 }
 
 impl World {
@@ -33,7 +33,7 @@ impl World {
     }
 
     pub fn generate_chunk(&mut self, pos: ChunkPos) {
-        println!("Generating chunk {pos:?}");
+        // println!("Generating chunk {pos:?}");
         let chunk = self.worldgen.generate_chunk(pos);
 
         for dir in Direction::ALL {
@@ -65,6 +65,7 @@ impl World {
         };
 
         *chunk.block_mut(rel_pos) = block;
+        // chunk.place_block(rel_pos, block);
         chunk.set_dirty(true);
 
         for dir in Direction::ALL {

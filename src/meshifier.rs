@@ -57,10 +57,11 @@ impl ChunkMeshifier {
                     let is_transparent = |[dx, dy, dz]: [isize; 3]| {
                         block_registry
                             .get(
-                                chunk.blocks[(x as isize + dx) as usize]
-                                    [(y as isize + dy) as usize]
-                                    [(z as isize + dz) as usize]
-                                    .id,
+                                // chunk.blocks[(x as isize + dx) as usize]
+                                //     [(y as isize + dy) as usize]
+                                //     [(z as isize + dz) as usize]
+                                //     .id,
+                                chunk.block(Point3::from([(x as isize + dx) as usize, (y as isize + dy) as usize, (z as isize + dz) as usize]).into()).id
                             )
                             .unwrap()
                             .transparent

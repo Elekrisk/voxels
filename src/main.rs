@@ -3,6 +3,10 @@
 #![feature(int_roundings)]
 #![feature(let_chains)]
 #![feature(type_alias_impl_trait)]
+#![feature(slice_flatten)]
+#![feature(impl_trait_in_fn_trait_return)]
+#![feature(async_closure)]
+#![feature(iter_array_chunks)]
 
 mod assets;
 mod camera;
@@ -12,10 +16,12 @@ mod input;
 mod mesh;
 mod meshifier;
 mod object;
+pub mod server;
 mod texture;
 
 use std::{
     borrow::BorrowMut,
+    net::{IpAddr, SocketAddr},
     ops::Rem,
     sync::Arc,
     time::{Duration, Instant},
@@ -24,8 +30,10 @@ use std::{
 use assets::AssetManager;
 use camera::{Camera, Frustum, Projection};
 use cgmath::{prelude::*, Quaternion, Vector2, Vector3};
+use clap::Parser;
 use game::Game;
 use mesh::{DrawModel, Material, Mesh, MeshVertex, Vertex};
+use server::{connection::SkipServerVerification, Server};
 use texture::Texture;
 use wgpu::{
     util::DeviceExt, Device, Queue, Surface, SurfaceCapabilities, SurfaceConfiguration,
@@ -312,7 +320,7 @@ impl<'w> State<'w> {
             texture_bind_group_layout.clone(),
         );
 
-        let game = Game::new(&mut asset_manager, &device);
+        let game = Game::new(&mut asset_manager, &device).await;
 
         State {
             surface,
@@ -377,9 +385,9 @@ impl<'w> State<'w> {
         }
     }
 
-    fn update(&mut self, dt: Duration) {
+    async fn update(&mut self, dt: Duration) {
         // self.camera_controller.update_camera(&mut self.camera, dt);
-        self.game.update(dt);
+        self.game.update(dt).await;
         self.camera_uniform
             .update_view_proj(&self.game.camera(), &self.projection);
         self.queue.write_buffer(
@@ -465,11 +473,14 @@ impl<'w> State<'w> {
 }
 
 pub async fn run() {
+    println!("In run");
     env_logger::init();
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
+    println!("Creating state...");
     let mut state = State::new(window).await;
+    println!("State created");
     // return;
     let mut last_render_time = Instant::now();
     let mut first = true;
@@ -481,68 +492,96 @@ pub async fn run() {
     state.window.set_cursor_visible(false);
 
     event_loop
-        .run(move |event, target| match event {
-            Event::DeviceEvent {
-                event: DeviceEvent::MouseMotion { delta },
-                ..
-            } => {
-                state
-                    .game
-                    .mouse_input(<Vector2<f64>>::from([delta.0, delta.1]).cast().unwrap());
-            }
-            Event::WindowEvent {
-                ref event,
-                window_id,
-            } if window_id == state.window().id() => {
-                if !state.input(event) {
-                    match event {
-                        WindowEvent::RedrawRequested => {
-                            let now = Instant::now();
-                            let dt = if first {
-                                first = false;
-                                Duration::from_secs_f32(1.0 / 60.0)
-                            } else {
-                                now - last_render_time
-                            };
-                            last_render_time = now;
-                            state.update(dt);
-                            match state.render() {
-                                Ok(_) => {}
-                                Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                                Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
-                                Err(e) => eprintln!("{:?}", e),
+        .run(move |event, target| {
+            // println!("Event! {event:#?}");
+            match event {
+                Event::DeviceEvent {
+                    event: DeviceEvent::MouseMotion { delta },
+                    ..
+                } => {
+                    state
+                        .game
+                        .mouse_input(<Vector2<f64>>::from([delta.0, delta.1]).cast().unwrap());
+                }
+                Event::WindowEvent {
+                    ref event,
+                    window_id,
+                } if window_id == state.window().id() => {
+                    if !state.input(event) {
+                        match event {
+                            WindowEvent::RedrawRequested => {
+                                let now = Instant::now();
+                                let dt = if first {
+                                    first = false;
+                                    Duration::from_secs_f32(1.0 / 60.0)
+                                } else {
+                                    now - last_render_time
+                                };
+                                last_render_time = now;
+                                pollster::block_on(state.update(dt));
+                                match state.render() {
+                                    Ok(_) => {}
+                                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                                    Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
+                                    Err(e) => eprintln!("{:?}", e),
+                                }
                             }
+                            WindowEvent::Resized(physical_size) => {
+                                state.resize(*physical_size);
+                            }
+                            WindowEvent::ScaleFactorChanged {
+                                scale_factor,
+                                inner_size_writer,
+                            } => {
+                                // state.resize(inner_size_writer);
+                            }
+                            WindowEvent::CloseRequested
+                            | WindowEvent::KeyboardInput {
+                                event:
+                                    KeyEvent {
+                                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                        ..
+                                    },
+                                ..
+                            } => target.exit(),
+                            _ => {}
                         }
-                        WindowEvent::Resized(physical_size) => {
-                            state.resize(*physical_size);
-                        }
-                        WindowEvent::ScaleFactorChanged {
-                            scale_factor,
-                            inner_size_writer,
-                        } => {
-                            // state.resize(inner_size_writer);
-                        }
-                        WindowEvent::CloseRequested
-                        | WindowEvent::KeyboardInput {
-                            event:
-                                KeyEvent {
-                                    physical_key: PhysicalKey::Code(KeyCode::Escape),
-                                    ..
-                                },
-                            ..
-                        } => target.exit(),
-                        _ => {}
                     }
                 }
+                Event::AboutToWait => {
+                    state.window.request_redraw();
+                }
+                _ => {}
             }
-            Event::AboutToWait => {
-                state.window.request_redraw();
-            }
-            _ => {}
         })
         .unwrap();
 }
 
+/// Simple program to greet a person
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Name of the person to greet
+    #[arg(short, long)]
+    no_server: bool,
+
+    #[arg(short, long)]
+    ip: Option<SocketAddr>,
+}
+
 pub fn main() {
+    let args = Args::parse();
+
+    let ip = args.ip.unwrap_or("[::]:1234".parse().unwrap());
+
+    if !args.no_server {
+        let mut server = Server::new();
+    
+        async_std::task::spawn(async move {
+            server.run().await;
+        });
+    }
+
+    println!("What is happening");
     pollster::block_on(run());
 }
