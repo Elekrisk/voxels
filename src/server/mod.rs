@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_std::channel::{Receiver, Sender};
+use async_std::channel::{Receiver, Sender, TryRecvError};
 use bevy_ecs::schedule::{Schedule, ScheduleLabel};
 use cgmath::Point3;
 use futures::{FutureExt, StreamExt};
@@ -44,10 +44,11 @@ pub struct Server {
     loaded_chunks: FastHashMap<ChunkPos, usize>,
     player_loaded_chunks: FastHashMap<Uuid, FastHashSet<ChunkPos>>,
     db: rusqlite::Connection,
+    shutdown_signal: Receiver<()>,
 }
 
 impl Server {
-    pub fn new() -> Self {
+    pub fn new(shutdown_signal: Receiver<()>) -> Self {
         let server_config = rustls::ServerConfig::builder();
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let key = rustls::PrivateKey(cert.serialize_private_key_der().into());
@@ -88,7 +89,47 @@ impl Server {
             loaded_chunks: FastHashMap::default(),
             player_loaded_chunks: FastHashMap::default(),
             db,
+            shutdown_signal
         }
+    }
+
+    fn shutdown(&mut self) {
+        for &pos in self.loaded_chunks.keys() {
+            let mut world = self.ecs_world.resource_mut::<World>();
+            let chunk = world.chunks.remove(&pos).unwrap();
+            self.db
+                .execute(
+                    "INSERT OR REPLACE INTO chunks (pos, blocks) VALUES(?2, ?1);",
+                    (chunk.serialize(), pos),
+                )
+                .unwrap();
+        }
+
+        self.loaded_chunks.clear();
+        self.player_loaded_chunks.clear();
+        self.connections.clear();
+    }
+
+    fn clean_up_disconnected_player(&mut self, player: Uuid) {
+        if let Some(loaded_chunks) = self.player_loaded_chunks.remove(&player) {
+            for pos in loaded_chunks {
+                let count = self.loaded_chunks.get_mut(&pos).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    self.loaded_chunks.remove(&pos);
+                    let mut world = self.ecs_world.resource_mut::<World>();
+                    let chunk = world.chunks.remove(&pos).unwrap();
+                    self.db
+                        .execute(
+                            "INSERT OR REPLACE INTO chunks (pos, blocks) VALUES(?2, ?1);",
+                            (chunk.serialize(), pos),
+                        )
+                        .unwrap();
+                }
+            }
+        }
+
+        self.connections.remove(&player);
     }
 
     pub async fn run(&mut self) {
@@ -101,6 +142,9 @@ impl Server {
 
         let mut tick_interval =
             async_std::stream::interval(Duration::from_secs_f32(1.0 / 20.0)).fuse();
+
+        let receiver = &self.shutdown_signal.clone();
+        let mut shutdown = receiver.recv().fuse();
 
         let mut now = Instant::now();
 
@@ -116,13 +160,11 @@ impl Server {
                         println!("Connection received from {}", conn.player_id);
                         let transport = conn.transport.clone();
 
-                        let (send_to_client, recv_to_client) = async_std::channel::unbounded();
-
-                        // let send_to_server = send_to_server.clone();
-                        // let recv_to_server = recv_to_server.clone();
+                        // Incoming messages are sent over this channel
                         let (send_to_server, recv_to_server) = async_std::channel::unbounded();
+                        // Spawn task that constantly reads messages from the player
                         async_std::task::spawn(async move {
-                            read_messages(transport, conn.player_id, send_to_server, recv_to_client).await.unwrap();
+                            read_messages(transport, conn.player_id, send_to_server).await.unwrap();
                         });
 
                         self.player_loaded_chunks.insert(conn.player_id, FastHashSet::default());
@@ -144,37 +186,51 @@ impl Server {
 
                     self.tick().await;
                 }
+                _ = shutdown => {
+                    self.shutdown();
+                    break;
+                }
             }
         }
     }
 
     pub async fn tick(&mut self) {
+        // We collect all incoming messages into a vec, so that we can avoid having `self` borrowed while
+        // we do stuff with them
         let mut msgs = vec![];
 
+        let mut disconnected_players = vec![];
+
         for (conn, rx) in self.connections.values() {
-            while let Ok(x) = rx.try_recv() {
-                msgs.push((conn.player_id, x));
+            loop {
+                match rx.try_recv() {
+                    Ok(x) => msgs.push((conn.player_id, x)),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Closed) => {
+                        disconnected_players.push(conn.player_id);
+                        break;
+                    },
+                }
             }
+        }
+        
+        for player in disconnected_players {
+            println!("Player disconnected! Cleaning up");
+            self.clean_up_disconnected_player(player);
         }
 
         for (player_id, (msg, mut respond)) in msgs {
             match msg {
                 MessageToServer::Connect => {}
                 MessageToServer::UpdatePlayerPosition { new_position } => {}
-                MessageToServer::GetChunk(pos) => {
-                    let chunk = self.load_chunk(player_id, pos);
-
-                    respond
-                        .respond(&MessageToClient::Chunk(chunk))
-                        .await
-                        .unwrap();
-                }
                 MessageToServer::GetChunks(chunks) => {
                     let mut chunks = chunks
                         .into_iter()
                         .map(|pos| self.load_chunk(player_id, pos));
 
                     loop {
+                        // Batch chunks so that the client can start rendering before all are sent over the network
+                        // Currently uses a batch number so large that it will never happen, due to it being fast enough already
                         let chunks = chunks.by_ref().take(100000000000).collect::<Vec<_>>();
                         if chunks.is_empty() {
                             break;
@@ -190,15 +246,16 @@ impl Server {
                     for pos in chunks {
                         self.unload_chunk(player_id, pos);
                     }
-                    // respond.respond(&MessageToClient::Ok).await.unwrap();
                 }
                 MessageToServer::ReplaceBlock { pos, new_block } => {
                     let chunk_pos = pos.chunk_pos();
                     let rel_pos = pos.rel_pos();
                     let mut world = self.ecs_world.resource_mut::<World>();
+                    // If the chunk is loaded, directly modify it
                     if let Some(chunk) = world.chunk_mut(chunk_pos) {
                         *chunk.block_mut(rel_pos) = new_block;
                     } else {
+                        // Else, load it, modify it, and then unload it
                         self.load_chunk(player_id, chunk_pos);
                         let mut world = self.ecs_world.resource_mut::<World>();
                         let chunk = world.chunk_mut(chunk_pos).unwrap();
@@ -206,6 +263,7 @@ impl Server {
                         self.unload_chunk(player_id, chunk_pos);
                     };
 
+                    // Propagate block placements to all connected players
                     for (player, (conn, _)) in &self.connections {
                         if *player == player_id {
                             println!("Skipping sending to {player}");
@@ -213,18 +271,24 @@ impl Server {
                         }
                         println!("Sending to {player}");
 
-                        conn.transport.transact::<_, ()>(&MessageToClient::BlockPlaced { pos, new_block }).await.unwrap();
+                        conn.transport
+                            .transact::<_, ()>(&MessageToClient::BlockPlaced { pos, new_block })
+                            .await
+                            .unwrap();
                     }
                 }
             }
         }
     }
 
+    /// Loads a chunk, or generates it if no such chunk exists
     pub fn load_chunk(&mut self, loader: Uuid, pos: ChunkPos) -> Chunk {
+        // Add this chunk to the list of chunks that `loader` has loaded
         let player_loaded = self.player_loaded_chunks.get_mut(&loader).unwrap();
         let just_loaded = player_loaded.insert(pos);
 
         if just_loaded {
+            // Increment the "reference counter" for the chunk
             *self.loaded_chunks.entry(pos).or_default() += 1;
         }
 
@@ -254,6 +318,8 @@ impl Server {
         }
     }
 
+    /// Unload a chunk.
+    /// Only actually unloads it when no player wants this loaded anymore.
     pub fn unload_chunk(&mut self, loader: Uuid, pos: ChunkPos) {
         let player_loaded = self.player_loaded_chunks.get_mut(&loader).unwrap();
         let was_loaded = player_loaded.remove(&pos);
@@ -276,6 +342,7 @@ impl Server {
     }
 }
 
+/// Wait for incoming connections, sending them through the channel
 async fn accept(endpoint: Endpoint, tx: async_std::channel::Sender<Connection>) {
     loop {
         if let Some(connecting) = endpoint.accept().await {
@@ -293,23 +360,16 @@ async fn accept(endpoint: Endpoint, tx: async_std::channel::Sender<Connection>) 
     }
 }
 
+/// Reads messages from a player and sends them through the channel
 async fn read_messages(
     mut transport: Transport,
     uuid: Uuid,
     tx: Sender<(MessageToServer, Respond<MessageToClient>)>,
-    rx: Receiver<MessageToClient>,
 ) -> anyhow::Result<()> {
     loop {
         let (msg, respond) = transport
             .accept_transact::<MessageToServer, MessageToClient>()
             .await?;
         tx.send((msg, respond)).await?;
-
-        // async_std::task::spawn(async move {
-
-        // });
-
-        // let response = rx.recv().await?;
-        // respond(response).await?;
     }
 }

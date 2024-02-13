@@ -10,7 +10,6 @@ pub enum MessageToServer {
     UpdatePlayerPosition {
         new_position: Vector3<f32>,
     },
-    GetChunk(ChunkPos),
     GetChunks(Vec<ChunkPos>),
     UnloadChunks(Vec<ChunkPos>),
     ReplaceBlock {
@@ -24,7 +23,6 @@ impl MessageToServer {
         match self {
             MessageToServer::Connect => "MessageToServer::Connect",
             MessageToServer::UpdatePlayerPosition { .. } => "MessageToServer::UpdatePlayerPosition",
-            MessageToServer::GetChunk(_) => "MessageToServer::GetChunk",
             MessageToServer::GetChunks(_) => "MessageToServer::GetChunks",
             MessageToServer::UnloadChunks(_) => "MessageToServer::UnloadChunks",
             MessageToServer::ReplaceBlock { pos, new_block } => "MessageToServer::ReplaceBlock",

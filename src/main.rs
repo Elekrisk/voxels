@@ -33,6 +33,7 @@ use cgmath::{prelude::*, Quaternion, Vector2, Vector3};
 use clap::Parser;
 use game::Game;
 use mesh::{DrawModel, Material, Mesh, MeshVertex, Vertex};
+use pollster::FutureExt;
 use server::{connection::SkipServerVerification, Server};
 use texture::Texture;
 use wgpu::{
@@ -574,14 +575,22 @@ pub fn main() {
 
     let ip = args.ip.unwrap_or("[::]:1234".parse().unwrap());
 
-    if !args.no_server {
-        let mut server = Server::new();
-    
-        async_std::task::spawn(async move {
-            server.run().await;
-        });
-    }
+    let (shutdown_signal_tx, shutdown_signal_rx) = async_std::channel::unbounded();
 
-    println!("What is happening");
+    let task = if !args.no_server {
+        let mut server = Server::new(shutdown_signal_rx);
+    
+        Some(async_std::task::spawn(async move {
+                    server.run().await;
+                }))
+    } else {
+        None
+    };
+
     pollster::block_on(run());
+    if let Some(task) = task {
+        println!("Shutting down server...");
+        shutdown_signal_tx.send_blocking(()).unwrap();
+        task.block_on();
+    }
 }
